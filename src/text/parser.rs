@@ -300,7 +300,13 @@ mod tests {
         let vdf = parse(input).unwrap();
 
         let obj = vdf.as_obj().unwrap();
-        assert_eq!(obj.get("name").and_then(|v| v.as_str()), Some(&Cow::Borrowed("test")));
-        assert_eq!(obj.get("count").and_then(|v| v.as_str()), Some(&Cow::Borrowed("42")));
+        assert_eq!(
+            obj.get("name").and_then(|v| v.as_str()),
+            Some(&Cow::Borrowed("test"))
+        );
+        assert_eq!(
+            obj.get("count").and_then(|v| v.as_str()),
+            Some(&Cow::Borrowed("42"))
+        );
     }
 }

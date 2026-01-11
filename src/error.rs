@@ -66,7 +66,11 @@ impl fmt::Display for Error {
                 write!(f, "Invalid magic number: 0x{:08x}", found)
             }
             Error::UnknownType { type_byte, offset } => {
-                write!(f, "Unknown type byte 0x{:02x} at offset {}", type_byte, offset)
+                write!(
+                    f,
+                    "Unknown type byte 0x{:02x} at offset {}",
+                    type_byte, offset
+                )
             }
             Error::InvalidStringIndex { index, max } => {
                 write!(
@@ -82,7 +86,11 @@ impl fmt::Display for Error {
             Error::InvalidUtf8 { offset } => {
                 write!(f, "Invalid UTF-8 sequence at offset {}", offset)
             }
-            Error::ParseError { input, offset, context } => {
+            Error::ParseError {
+                input,
+                offset,
+                context,
+            } => {
                 let snippet = if input.len() > 50 {
                     format!("{}...", &input[..50])
                 } else {

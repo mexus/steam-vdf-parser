@@ -9,7 +9,11 @@ fn test_parse_real_localconfig_text() {
     let content = std::fs::read_to_string(path).expect("Failed to read localconfig.vdf");
 
     let result = parse_text(&content);
-    assert!(result.is_ok(), "Failed to parse localconfig.vdf: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse localconfig.vdf: {:?}",
+        result.err()
+    );
 
     let vdf = result.unwrap();
     assert_eq!(vdf.key, "UserLocalConfigStore");
@@ -28,7 +32,11 @@ fn test_parse_real_appinfo_binary() {
     let data = std::fs::read(path).expect("Failed to read appinfo.vdf");
 
     let result = parse_binary(&data);
-    assert!(result.is_ok(), "Failed to parse appinfo.vdf: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse appinfo.vdf: {:?}",
+        result.err()
+    );
 
     let vdf = result.unwrap();
     assert!(vdf.key.starts_with("appinfo_universe_"));
