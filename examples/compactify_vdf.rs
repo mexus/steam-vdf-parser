@@ -9,9 +9,8 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-// Magic numbers from src/binary/types.rs
-const APPINFO_MAGIC_28: u32 = 0x07564428;
-const APPINFO_MAGIC_29: u32 = 0x07564429;
+use steam_vdf_parser::binary::APPINFO_MAGIC_40;
+use steam_vdf_parser::binary::APPINFO_MAGIC_41;
 
 // App entry header size
 const APPINFO_ENTRY_HEADER_SIZE: usize = 68;
@@ -96,9 +95,9 @@ fn main() {
         }
     };
 
-    let (is_v29, string_table_offset) = match magic {
-        APPINFO_MAGIC_28 => (false, None),
-        APPINFO_MAGIC_29 => {
+    let (is_v41, string_table_offset) = match magic {
+        APPINFO_MAGIC_40 => (false, None),
+        APPINFO_MAGIC_41 => {
             let offset = read_u64_le(&data, 8);
             (true, offset.map(|o| o as usize))
         }
@@ -111,14 +110,14 @@ fn main() {
         }
     };
 
-    if is_v29 && string_table_offset.is_none() {
-        eprintln!("Error: cannot read string table offset for v29 format");
+    if is_v41 && string_table_offset.is_none() {
+        eprintln!("Error: cannot read string table offset for v41 format");
         std::process::exit(1);
     }
 
     println!(
         "Detected appinfo.vdf version: {}",
-        if is_v29 { 29 } else { 28 }
+        if is_v41 { 41 } else { 40 }
     );
     println!("Universe: {}", universe);
     if let Some(offset) = string_table_offset {
@@ -210,17 +209,17 @@ fn main() {
     // Write header
     output.extend_from_slice(&data[0..HEADER_SIZE]);
 
-    // Update string table offset for v29 (will be calculated later)
-    let string_table_offset_placeholder = if is_v29 { Some(output.len() - 8) } else { None };
+    // Update string table offset for v41 (will be calculated later)
+    let string_table_offset_placeholder = if is_v41 { Some(output.len() - 8) } else { None };
 
     // Write selected app entries
     for (offset, size) in &selected_apps {
         output.extend_from_slice(&data[*offset..*offset + *size]);
     }
 
-    // For v29: copy string table
-    // For v28: add terminator (4 bytes of 0x00)
-    if is_v29 {
+    // For v41: copy string table
+    // For v40: add terminator (4 bytes of 0x00)
+    if is_v41 {
         let string_table_offset = string_table_offset.unwrap();
         let string_table_data = &data[string_table_offset..];
 
@@ -239,7 +238,7 @@ fn main() {
         // Copy string table
         output.extend_from_slice(string_table_data);
     } else {
-        // v28: add terminator
+        // v40: add terminator
         output.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
     }
 

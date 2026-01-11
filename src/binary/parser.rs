@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 
 use crate::binary::types::{
-    APPINFO_MAGIC_28, APPINFO_MAGIC_29, BinaryType, PACKAGEINFO_MAGIC_39, PACKAGEINFO_MAGIC_40,
+    APPINFO_MAGIC_40, APPINFO_MAGIC_41, BinaryType, PACKAGEINFO_MAGIC_39, PACKAGEINFO_MAGIC_40,
     PACKAGEINFO_MAGIC_BASE,
 };
 use crate::error::{Error, Result, with_offset};
@@ -75,16 +75,16 @@ struct ParseConfig<'input, 'table> {
 /// Key parsing strategy for binary VDF formats.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 enum KeyMode<'input, 'table> {
-    /// Parse keys as null-terminated UTF-8 strings (v28, shortcuts)
+    /// Parse keys as null-terminated UTF-8 strings (v40, shortcuts)
     #[default]
     NullTerminated,
-    /// Parse keys as u32 indices into string table (v29)
+    /// Parse keys as u32 indices into string table (v41)
     StringTableIndex {
         string_table: &'table StringTable<'input>,
     },
 }
 
-/// String table for v29 appinfo format.
+/// String table for v41 appinfo format.
 ///
 /// Encapsulates pre-extracted strings from the string table section,
 /// enabling O(1) lookups by index.
@@ -132,7 +132,7 @@ impl<'a> KeyMode<'a, '_> {
 pub fn parse(input: &[u8]) -> Result<Vdf<'_>> {
     // Check if this looks like appinfo format (starts with magic)
     if let Some(magic) = read_u32_le(input)
-        && (magic == APPINFO_MAGIC_28 || magic == APPINFO_MAGIC_29)
+        && (magic == APPINFO_MAGIC_40 || magic == APPINFO_MAGIC_41)
     {
         // parse_appinfo returns Vdf<'static>, which is compatible with Vdf<'_>
         return parse_appinfo(input);
@@ -169,13 +169,13 @@ pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'_>> {
 /// Parse appinfo.vdf format binary data.
 ///
 /// This function returns zero-copy data where possible - strings are borrowed from
-/// the input buffer (including string table entries in v29 format).
+/// the input buffer (including string table entries in v41 format).
 ///
 /// Format:
 /// - 4 bytes: Magic number (0x07564428 or 0x07564429)
 /// - 4 bytes: Universe
 /// - If magic == 0x07564429: 8 bytes: String table offset
-/// - Apps continue until EOF (or string table for v29)
+/// - Apps continue until EOF (or string table for v41)
 /// - For each app:
 ///   - 4 bytes: App ID
 ///   - 4 bytes: Size (remaining data size for this entry)
@@ -217,8 +217,8 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
     };
 
     let (string_table_offset, mut rest) = match magic {
-        APPINFO_MAGIC_28 => (None, &input[8..]),
-        APPINFO_MAGIC_29 => {
+        APPINFO_MAGIC_40 => (None, &input[8..]),
+        APPINFO_MAGIC_41 => {
             let Some(offset) = read_u64_le(&input[8..]) else {
                 return Err(Error::UnexpectedEndOfInput {
                     context: "reading string table offset",
@@ -232,7 +232,7 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
         _ => {
             return Err(Error::InvalidMagic {
                 found: magic,
-                expected: &[APPINFO_MAGIC_28, APPINFO_MAGIC_29],
+                expected: &[APPINFO_MAGIC_40, APPINFO_MAGIC_41],
             });
         }
     };
@@ -254,10 +254,10 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
 
     let mut obj = Obj::new();
 
-    // Calculate where apps end (at string table for v29, or EOF for v28)
+    // Calculate where apps end (at string table for v41, or EOF for v40)
     let apps_end_offset = string_table_offset.unwrap_or(input.len());
 
-    // Use v29 format (string table) if string_table_offset is Some
+    // Use v41 format (string table) if string_table_offset is Some
     let config = ParseConfig {
         key_mode: if let Some(string_table) = &string_table {
             KeyMode::StringTableIndex { string_table }
@@ -623,7 +623,7 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
     Ok((&input[i + 2..], string))
 }
 
-/// Parse the string table section (v29 format).
+/// Parse the string table section (v41 format).
 ///
 /// Returns a `StringTable` containing pre-extracted strings for O(1) lookups.
 ///

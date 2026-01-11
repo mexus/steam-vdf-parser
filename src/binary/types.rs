@@ -46,11 +46,11 @@ impl BinaryType {
     }
 }
 
-/// Magic number for appinfo.vdf format version 28.
-pub const APPINFO_MAGIC_28: u32 = 0x07564428;
+/// Magic number for appinfo.vdf format version 40.
+pub const APPINFO_MAGIC_40: u32 = 0x07564428;
 
-/// Magic number for appinfo.vdf format version 29 (with string table).
-pub const APPINFO_MAGIC_29: u32 = 0x07564429;
+/// Magic number for appinfo.vdf format version 41 (with string table).
+pub const APPINFO_MAGIC_41: u32 = 0x07564429;
 
 /// Magic base for packageinfo.vdf format (upper 3 bytes).
 pub const PACKAGEINFO_MAGIC_BASE: u32 = 0x065655;

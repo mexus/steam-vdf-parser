@@ -64,11 +64,11 @@ Complex format with versioned structure for caching Steam application metadata.
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
-| 0x00 | 4 | Magic | `0x07564427` (v27), `0x07564428` (v28), or `0x07564429` (v29) |
+| 0x00 | 4 | Magic | `0x07564427` (v39), `0x07564428` (v40), or `0x07564429` (v41) |
 | 0x04 | 4 | Universe | Always 1 (public) |
-| 0x08 | 8 | String Table Offset | Present only in v29 |
+| 0x08 | 8 | String Table Offset | Present only in v41 |
 
-#### String Table (v29 only)
+#### String Table (v41 only)
 
 Located at the `String Table Offset`:
 
@@ -77,7 +77,7 @@ Located at the `String Table Offset`:
 | 0x00 | 4 | String Count | Number of strings (little-endian) |
 | 0x04 | - | Strings | `String Count` null-terminated UTF-8 strings |
 
-In v29, object **keys** are stored as uint32 indices into the string table. String **values** are always inline null-terminated strings.
+In v41, object **keys** are stored as uint32 indices into the string table. String **values** are always inline null-terminated strings.
 
 #### App Entry Header
 
@@ -92,7 +92,7 @@ Each app entry has a 68-byte header:
 | 0x10 | 8 | PICS Token | Access token for PICS API |
 | 0x18 | 20 | SHA1 | Hash of VDF payload |
 | 0x2C | 4 | Change Number | Sequence number |
-| 0x30 | 20 | Binary SHA1 | Hash of binary VDF data (v28/v29 only) |
+| 0x30 | 20 | Binary SHA1 | Hash of binary VDF data (v40/v41 only) |
 
 After the 68-byte header, the VDF data begins. The VDF data length is `Size - 60`.
 
@@ -100,8 +100,8 @@ After the 68-byte header, the VDF data begins. The VDF data length is `Size - 60
 
 The binary VDF data uses the same type bytes as shortcuts.vdf, with key encoding differences:
 
-- **v27/v28**: Keys are null-terminated UTF-8 strings
-- **v29**: Keys are uint32 indices into the string table (little-endian)
+- **v39/v40**: Keys are null-terminated UTF-8 strings
+- **v41**: Keys are uint32 indices into the string table (little-endian)
 - **All versions**: String **values** are always null-terminated UTF-8 strings (inline, not from string table)
 
 ## Testing
