@@ -29,13 +29,13 @@ fn test_parse_real_localconfig_text() {
 
 #[test]
 fn test_parse_real_appinfo_binary() {
-    let path = Path::new("tests/fixtures/appinfo.vdf");
-    let data = std::fs::read(path).expect("Failed to read appinfo.vdf");
+    let path = Path::new("tests/fixtures/appinfo_10.vdf");
+    let data = std::fs::read(path).expect("Failed to read appinfo_10.vdf");
 
     let result = parse_binary(&data);
     assert!(
         result.is_ok(),
-        "Failed to parse appinfo.vdf: {:?}",
+        "Failed to parse appinfo_10.vdf: {:?}",
         result.err()
     );
 
@@ -45,9 +45,8 @@ fn test_parse_real_appinfo_binary() {
     let obj = vdf.as_obj().expect("Root should be an object");
     assert!(!obj.is_empty(), "Root should have keys");
 
-    // appinfo.vdf should contain apps (numeric keys as strings)
-    // Check that we have at least some entries
-    assert!(obj.len() > 100, "Should have many apps in appinfo.vdf");
+    // appinfo_10.vdf should contain 10 apps (numeric keys as strings)
+    assert_eq!(obj.len(), 10, "Should have exactly 10 apps in appinfo_10.vdf");
 }
 
 #[test]
