@@ -1,0 +1,53 @@
+//! Type definitions for binary VDF format.
+
+/// Binary type byte values used in Steam's binary VDF format.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BinaryType {
+    /// Start of an object (none/string marker).
+    None = 0x00,
+    /// String value (null-terminated).
+    String = 0x01,
+    /// 32-bit integer value.
+    Int32 = 0x02,
+    /// 32-bit float value.
+    Float = 0x03,
+    /// Pointer value.
+    Ptr = 0x04,
+    /// Wide string value (UTF-16).
+    WString = 0x05,
+    /// Color value (RGBA).
+    Color = 0x06,
+    /// 64-bit unsigned integer value.
+    UInt64 = 0x07,
+    /// End of object marker.
+    ObjectEnd = 0x08,
+}
+
+impl BinaryType {
+    /// Attempts to convert a byte to a `BinaryType`.
+    ///
+    /// Returns `None` if the byte doesn't correspond to a known type.
+    #[inline]
+    pub fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            0x00 => Some(BinaryType::None),
+            0x01 => Some(BinaryType::String),
+            0x02 => Some(BinaryType::Int32),
+            0x03 => Some(BinaryType::Float),
+            0x04 => Some(BinaryType::Ptr),
+            0x05 => Some(BinaryType::WString),
+            0x06 => Some(BinaryType::Color),
+            0x07 => Some(BinaryType::UInt64),
+            0x08 => Some(BinaryType::ObjectEnd),
+            _ => None,
+        }
+    }
+}
+
+/// Magic number for appinfo.vdf format version 28.
+pub const APPINFO_MAGIC_28: u32 = 0x07564428;
+
+/// Magic number for appinfo.vdf format version 29 (with string table).
+pub const APPINFO_MAGIC_29: u32 = 0x07564429;

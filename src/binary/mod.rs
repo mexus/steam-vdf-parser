@@ -1,0 +1,11 @@
+//! Binary VDF format parser.
+//!
+//! Supports Steam's binary VDF formats:
+//! - shortcuts.vdf format (simple binary)
+//! - appinfo.vdf format (with optional string table)
+
+mod parser;
+mod types;
+
+pub use parser::{parse, parse_appinfo, parse_shortcuts};
+pub use types::{BinaryType, APPINFO_MAGIC_28, APPINFO_MAGIC_29};
