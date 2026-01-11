@@ -6,7 +6,10 @@
 
 use std::borrow::Cow;
 
-use crate::binary::types::{APPINFO_MAGIC_28, APPINFO_MAGIC_29, BinaryType};
+use crate::binary::types::{
+    APPINFO_MAGIC_28, APPINFO_MAGIC_29, PACKAGEINFO_MAGIC_BASE, PACKAGEINFO_MAGIC_39,
+    PACKAGEINFO_MAGIC_40, BinaryType,
+};
 use crate::error::{with_offset, Error, Result};
 use crate::value::{Obj, Value, Vdf};
 
@@ -655,6 +658,179 @@ fn parse_string_table(input: &[u8]) -> Result<StringTable<'_>> {
     }
 
     Ok(StringTable { strings })
+}
+
+/// Header size for packageinfo entries (package_id + hash + change_number + token).
+const PACKAGEINFO_ENTRY_HEADER_SIZE_V39: usize = 4 + 20 + 4; // package_id + hash + change_number
+const PACKAGEINFO_ENTRY_HEADER_SIZE_V40: usize = 4 + 20 + 4 + 8; // + token
+
+/// Parse packageinfo.vdf format binary data.
+///
+/// This function returns zero-copy data where possible - strings are borrowed from
+/// the input buffer.
+///
+/// Format:
+/// - 4 bytes: Magic number + version (0x06565527 for v39, 0x06565528 for v40)
+///   - Upper 3 bytes: 0x065655 (magic)
+///   - Lower 1 byte: version (27 = 39, 28 = 40)
+/// - 4 bytes: Universe
+/// - Repeated package entries until package_id == 0xFFFFFFFF:
+///   - 4 bytes: Package ID (uint32)
+///   - 20 bytes: SHA-1 hash
+///   - 4 bytes: Change number (uint32)
+///   - 8 bytes: PICS token (uint64, only in v40+)
+///   - Binary VDF blob (KeyValues1 binary) with package metadata
+pub fn parse_packageinfo(input: &[u8]) -> Result<Vdf<'_>> {
+    if input.len() < 8 {
+        return Err(Error::UnexpectedEndOfInput {
+            context: "reading packageinfo header",
+            offset: input.len(),
+            expected: 8,
+            actual: input.len(),
+        });
+    }
+
+    let Some(magic) = read_u32_le(input) else {
+        return Err(Error::UnexpectedEndOfInput {
+            context: "reading magic number",
+            offset: 0,
+            expected: 4,
+            actual: input.len(),
+        });
+    };
+
+    // Extract version from lower byte and magic from upper 3 bytes
+    let version = magic & 0xFF;
+    let magic_base = magic >> 8;
+
+    if magic_base != PACKAGEINFO_MAGIC_BASE {
+        return Err(Error::InvalidMagic {
+            found: magic,
+            expected: &[PACKAGEINFO_MAGIC_39, PACKAGEINFO_MAGIC_40],
+        });
+    }
+
+    if version != 39 && version != 40 {
+        return Err(Error::InvalidMagic {
+            found: magic,
+            expected: &[PACKAGEINFO_MAGIC_39, PACKAGEINFO_MAGIC_40],
+        });
+    }
+
+    let Some(universe) = read_u32_le(&input[4..]) else {
+        return Err(Error::UnexpectedEndOfInput {
+            context: "reading universe",
+            offset: 4,
+            expected: 4,
+            actual: input.len() - 4,
+        });
+    };
+
+    let has_token = version >= 40;
+    let header_size = if has_token {
+        PACKAGEINFO_ENTRY_HEADER_SIZE_V40
+    } else {
+        PACKAGEINFO_ENTRY_HEADER_SIZE_V39
+    };
+
+    let mut rest = &input[8..];
+    let mut obj = Obj::new();
+
+    loop {
+        // Check if we have at least 4 bytes for the package ID
+        if rest.len() < 4 {
+            // At EOF or termination marker, exit gracefully
+            break;
+        }
+
+        // Read package ID
+        let Some(package_id) = read_u32_le(rest) else {
+            break;
+        };
+
+        // Check for termination marker
+        if package_id == 0xFFFFFFFF {
+            break;
+        }
+
+        // Now ensure we have enough data for the full header
+        if rest.len() < header_size {
+            return Err(Error::UnexpectedEndOfInput {
+                context: "reading package entry header",
+                offset: input.len() - rest.len(),
+                expected: header_size,
+                actual: rest.len(),
+            });
+        }
+
+        // Skip hash (20 bytes), read change number
+        let hash_offset = 4;
+        let change_number_offset = hash_offset + 20;
+
+        let Some(change_number) = read_u32_le(&rest[change_number_offset..]) else {
+            return Err(Error::UnexpectedEndOfInput {
+                context: "reading change number",
+                offset: input.len() - rest.len() + change_number_offset,
+                expected: 4,
+                actual: rest.len() - change_number_offset,
+            });
+        };
+
+        // Skip token if present (8 bytes after change_number)
+        let vdf_data_offset = if has_token {
+            change_number_offset + 4 + 8
+        } else {
+            change_number_offset + 4
+        };
+
+        // Parse the VDF data for this package
+        let vdf_data = &rest[vdf_data_offset..];
+
+        let config = ParseConfig::default(); // Uses null-terminated keys like shortcuts
+
+        let (_vdf_rest, package_obj) = parse_object(vdf_data, &config)
+            .map_err(with_offset(input.len() - vdf_data.len()))?;
+
+        // Create metadata object for this package
+        let mut package_with_meta = Obj::new();
+
+        // Add metadata fields
+        package_with_meta.insert(
+            Cow::Borrowed("packageid"),
+            Value::I32(package_id as i32),
+        );
+        package_with_meta.insert(
+            Cow::Borrowed("change_number"),
+            Value::U64(change_number as u64),
+        );
+        package_with_meta.insert(
+            Cow::Borrowed("sha1"),
+            Value::Str(Cow::Owned(hex::encode(&rest[hash_offset..hash_offset + 20]))),
+        );
+
+        // Merge the parsed VDF data
+        for (key, value) in package_obj.iter() {
+            package_with_meta.insert(key.clone(), value.clone());
+        }
+
+        // Insert with package ID as key
+        obj.insert(
+            Cow::Owned(package_id.to_string()),
+            Value::Obj(package_with_meta),
+        );
+
+        // Find the end of this VDF object to move to the next entry
+        // The VDF object is parsed starting with 0x00 and ending at the matching 0x08
+        let (_vdf_rest, _) = parse_object(vdf_data, &config)
+            .map_err(with_offset(input.len() - vdf_data.len()))?;
+        let vdf_end = vdf_data.len() - _vdf_rest.len();
+        rest = &rest[vdf_data_offset + vdf_end..];
+    }
+
+    Ok(Vdf {
+        key: Cow::Owned(format!("packageinfo_universe_{}", universe)),
+        value: Value::Obj(obj),
+    })
 }
 
 #[cfg(test)]
