@@ -46,7 +46,11 @@ fn test_parse_real_appinfo_binary() {
     assert!(!obj.is_empty(), "Root should have keys");
 
     // appinfo_10.vdf should contain 10 apps (numeric keys as strings)
-    assert_eq!(obj.len(), 10, "Should have exactly 10 apps in appinfo_10.vdf");
+    assert_eq!(
+        obj.len(),
+        10,
+        "Should have exactly 10 apps in appinfo_10.vdf"
+    );
 }
 
 #[test]
@@ -69,7 +73,10 @@ fn test_parse_real_packageinfo_binary() {
 
     // packageinfo.vdf should contain packages
     // Check that we have at least some entries
-    assert!(obj.len() > 50, "Should have many packages in packageinfo.vdf");
+    assert!(
+        obj.len() > 50,
+        "Should have many packages in packageinfo.vdf"
+    );
 
     // Check that package 0 exists and has the expected metadata
     let pkg0 = obj.get("0").expect("Package 0 should exist");
@@ -83,7 +90,10 @@ fn test_parse_real_packageinfo_binary() {
     );
 
     assert!(
-        pkg0_obj.get("change_number").and_then(|v| v.as_u64()).is_some(),
+        pkg0_obj
+            .get("change_number")
+            .and_then(|v| v.as_u64())
+            .is_some(),
         "Package 0 should have change_number"
     );
 
@@ -93,7 +103,9 @@ fn test_parse_real_packageinfo_binary() {
     );
 
     // Check that the VDF data is present under the "0" key
-    let vdf_data = pkg0_obj.get("0").expect("Package 0 should have VDF data under '0' key");
+    let vdf_data = pkg0_obj
+        .get("0")
+        .expect("Package 0 should have VDF data under '0' key");
     let vdf_obj = vdf_data.as_obj().expect("VDF data should be an object");
 
     // Check for known fields in the VDF data

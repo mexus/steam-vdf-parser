@@ -7,10 +7,10 @@
 use std::borrow::Cow;
 
 use crate::binary::types::{
-    APPINFO_MAGIC_28, APPINFO_MAGIC_29, PACKAGEINFO_MAGIC_BASE, PACKAGEINFO_MAGIC_39,
-    PACKAGEINFO_MAGIC_40, BinaryType,
+    APPINFO_MAGIC_28, APPINFO_MAGIC_29, BinaryType, PACKAGEINFO_MAGIC_39, PACKAGEINFO_MAGIC_40,
+    PACKAGEINFO_MAGIC_BASE,
 };
-use crate::error::{with_offset, Error, Result};
+use crate::error::{Error, Result, with_offset};
 use crate::value::{Obj, Value, Vdf};
 
 // ===== Appinfo Header Constants =====
@@ -247,10 +247,7 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
                 actual: input.len() - offset,
             });
         }
-        Some(
-            parse_string_table(&input[offset..])
-                .map_err(with_offset(offset))?,
-        )
+        Some(parse_string_table(&input[offset..]).map_err(with_offset(offset))?)
     } else {
         None
     };
@@ -326,8 +323,8 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
         let vdf_data = &rest[APPINFO_VDF_DATA_OFFSET..vdf_end];
         let vdf_offset = current_offset + APPINFO_VDF_DATA_OFFSET;
 
-        let (_vdf_rest, app_obj) = parse_object(vdf_data, &config)
-            .map_err(with_offset(vdf_offset))?;
+        let (_vdf_rest, app_obj) =
+            parse_object(vdf_data, &config).map_err(with_offset(vdf_offset))?;
 
         // Insert with app ID as key
         obj.insert(Cow::Owned(app_id.to_string()), Value::Obj(app_obj));
@@ -467,10 +464,7 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                     }
                     None => {
                         // Unknown type byte
-                        return Err(Error::UnknownType {
-                            type_byte,
-                            offset,
-                        });
+                        return Err(Error::UnknownType { type_byte, offset });
                     }
                 }
             }
@@ -788,24 +782,23 @@ pub fn parse_packageinfo(input: &[u8]) -> Result<Vdf<'_>> {
 
         let config = ParseConfig::default(); // Uses null-terminated keys like shortcuts
 
-        let (_vdf_rest, package_obj) = parse_object(vdf_data, &config)
-            .map_err(with_offset(input.len() - vdf_data.len()))?;
+        let (_vdf_rest, package_obj) =
+            parse_object(vdf_data, &config).map_err(with_offset(input.len() - vdf_data.len()))?;
 
         // Create metadata object for this package
         let mut package_with_meta = Obj::new();
 
         // Add metadata fields
-        package_with_meta.insert(
-            Cow::Borrowed("packageid"),
-            Value::I32(package_id as i32),
-        );
+        package_with_meta.insert(Cow::Borrowed("packageid"), Value::I32(package_id as i32));
         package_with_meta.insert(
             Cow::Borrowed("change_number"),
             Value::U64(change_number as u64),
         );
         package_with_meta.insert(
             Cow::Borrowed("sha1"),
-            Value::Str(Cow::Owned(hex::encode(&rest[hash_offset..hash_offset + 20]))),
+            Value::Str(Cow::Owned(hex::encode(
+                &rest[hash_offset..hash_offset + 20],
+            ))),
         );
 
         // Merge the parsed VDF data
@@ -821,8 +814,8 @@ pub fn parse_packageinfo(input: &[u8]) -> Result<Vdf<'_>> {
 
         // Find the end of this VDF object to move to the next entry
         // The VDF object is parsed starting with 0x00 and ending at the matching 0x08
-        let (_vdf_rest, _) = parse_object(vdf_data, &config)
-            .map_err(with_offset(input.len() - vdf_data.len()))?;
+        let (_vdf_rest, _) =
+            parse_object(vdf_data, &config).map_err(with_offset(input.len() - vdf_data.len()))?;
         let vdf_end = vdf_data.len() - _vdf_rest.len();
         rest = &rest[vdf_data_offset + vdf_end..];
     }

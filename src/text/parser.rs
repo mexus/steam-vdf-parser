@@ -55,9 +55,7 @@ fn quoted_string_cow<'i>(input: &mut &'i str) -> ModalResult<Cow<'i, str>> {
     '"'.parse_next(input)?;
 
     // Check if there are any escape sequences
-    let content_end = input
-        .find(['\\', '"'])
-        .unwrap_or(input.len());
+    let content_end = input.find(['\\', '"']).unwrap_or(input.len());
 
     if content_end < input.len() && input[content_end..].starts_with('\\') {
         // Has escape sequences - need to process them

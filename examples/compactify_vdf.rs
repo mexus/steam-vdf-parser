@@ -116,7 +116,10 @@ fn main() {
         std::process::exit(1);
     }
 
-    println!("Detected appinfo.vdf version: {}", if is_v29 { 29 } else { 28 });
+    println!(
+        "Detected appinfo.vdf version: {}",
+        if is_v29 { 29 } else { 28 }
+    );
     println!("Universe: {}", universe);
     if let Some(offset) = string_table_offset {
         println!("String table offset: {}", offset);
@@ -156,7 +159,10 @@ fn main() {
 
         // Check for terminator
         if app_id == 0 {
-            println!("Reached terminator (app_id == 0) at offset {}", current_offset);
+            println!(
+                "Reached terminator (app_id == 0) at offset {}",
+                current_offset
+            );
             break;
         }
 
@@ -182,7 +188,10 @@ fn main() {
             break;
         }
 
-        println!("Selecting app_id {} at offset {}, size {}", app_id, current_offset, total_entry_size);
+        println!(
+            "Selecting app_id {} at offset {}, size {}",
+            app_id, current_offset, total_entry_size
+        );
 
         selected_apps.push((current_offset, total_entry_size));
         current_offset += total_entry_size;
