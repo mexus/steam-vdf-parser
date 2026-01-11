@@ -54,7 +54,7 @@ fn main() {
     let path = Path::new(&args[1]);
     let force_text = args.len() > 2 && args[2] == "--text";
 
-    let result = if force_text || path.extension().map_or(false, |e| e == "vdf") {
+    let result = if force_text || path.extension().is_some_and(|e| e == "vdf") {
         // Try text first for .vdf files
         let content = std::fs::read_to_string(path);
         if let Ok(content) = content {
@@ -62,12 +62,12 @@ fn main() {
         } else {
             // Fall back to binary
             let data = std::fs::read(path).expect("Failed to read file");
-            if path.file_name().map_or(false, |n| {
-                n.to_str().map_or(false, |s| s.contains("packageinfo"))
+            if path.file_name().is_some_and(|n| {
+                n.to_str().is_some_and(|s| s.contains("packageinfo"))
             }) {
                 binary::parse_packageinfo(&data).map(|v| v.into_owned())
-            } else if path.file_name().map_or(false, |n| {
-                n.to_str().map_or(false, |s| s.contains("appinfo"))
+            } else if path.file_name().is_some_and(|n| {
+                n.to_str().is_some_and(|s| s.contains("appinfo"))
             }) {
                 binary::parse_appinfo(&data).map(|v| v.into_owned())
             } else {
@@ -77,12 +77,12 @@ fn main() {
     } else {
         // Binary parsing
         let data = std::fs::read(path).expect("Failed to read file");
-        if path.file_name().map_or(false, |n| {
-            n.to_str().map_or(false, |s| s.contains("packageinfo"))
+        if path.file_name().is_some_and(|n| {
+            n.to_str().is_some_and(|s| s.contains("packageinfo"))
         }) {
             binary::parse_packageinfo(&data).map(|v| v.into_owned())
-        } else if path.file_name().map_or(false, |n| {
-            n.to_str().map_or(false, |s| s.contains("appinfo"))
+        } else if path.file_name().is_some_and(|n| {
+            n.to_str().is_some_and(|s| s.contains("appinfo"))
         }) {
             binary::parse_appinfo(&data).map(|v| v.into_owned())
         } else {
