@@ -10,29 +10,106 @@ use crate::binary::types::{APPINFO_MAGIC_28, APPINFO_MAGIC_29, BinaryType};
 use crate::error::{Error, Result};
 use crate::value::{Obj, Value, Vdf};
 
+// ===== Appinfo Header Constants =====
+
+/// Size of the appinfo entry header (up to and including the size field).
+const APPINFO_HEADER_SIZE: usize = 8;
+
+/// Size of the header after the size field (60 bytes).
+const APPINFO_HEADER_AFTER_SIZE: usize = 60;
+
+/// Total size of the appinfo entry header.
+const APPINFO_ENTRY_HEADER_SIZE: usize = APPINFO_HEADER_SIZE + APPINFO_HEADER_AFTER_SIZE;
+
+/// Offset where VDF data starts within an appinfo entry.
+const APPINFO_VDF_DATA_OFFSET: usize = APPINFO_ENTRY_HEADER_SIZE;
+
+// ===== Helper Functions =====
+
+/// Read a little-endian u32 from the start of a slice.
+///
+/// Returns `None` if the slice is too small.
+#[inline]
+fn read_u32_le(input: &[u8]) -> Option<u32> {
+    input.get(..4).and_then(|bytes| {
+        let arr: [u8; 4] = bytes.try_into().ok()?;
+        Some(u32::from_le_bytes(arr))
+    })
+}
+
+/// Read a little-endian u64 from the start of a slice.
+///
+/// Returns `None` if the slice is too small.
+#[inline]
+fn read_u64_le(input: &[u8]) -> Option<u64> {
+    input.get(..8).and_then(|bytes| {
+        let arr: [u8; 8] = bytes.try_into().ok()?;
+        Some(u64::from_le_bytes(arr))
+    })
+}
+
+/// Read a little-endian i32 from the start of a slice.
+///
+/// Returns `None` if the slice is too small.
+#[inline]
+fn read_i32_le(input: &[u8]) -> Option<i32> {
+    input.get(..4).and_then(|bytes| {
+        let arr: [u8; 4] = bytes.try_into().ok()?;
+        Some(i32::from_le_bytes(arr))
+    })
+}
+
+/// Read a little-endian f32 from the start of a slice.
+///
+/// Returns `None` if the slice is too small.
+#[inline]
+fn read_f32_le(input: &[u8]) -> Option<f32> {
+    input.get(..4).and_then(|bytes| {
+        let arr: [u8; 4] = bytes.try_into().ok()?;
+        Some(f32::from_le_bytes(arr))
+    })
+}
+
+/// Read a little-endian u32 from the start of a slice, returning an error if too small.
+fn ensure_read_u32_le(input: &[u8]) -> Result<(&[u8], u32)> {
+    read_u32_le(input)
+        .map(|value| (&input[4..], value))
+        .ok_or(Error::UnexpectedEndOfInput)
+}
+
+/// Read a little-endian u64 from the start of a slice, returning an error if too small.
+fn ensure_read_u64_le(input: &[u8]) -> Result<(&[u8], u64)> {
+    read_u64_le(input)
+        .map(|value| (&input[8..], value))
+        .ok_or(Error::UnexpectedEndOfInput)
+}
+
 /// Parse configuration for binary VDF formats.
 ///
 /// Encapsulates the differences between shortcuts.vdf and appinfo.vdf formats.
-struct ParseConfig<'a> {
-    /// String table for v29 format (cloned for each parse context)
-    string_table: Option<StringTable<'a>>,
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+struct ParseConfig<'input, 'table> {
     /// Strategy for parsing keys
-    key_mode: KeyMode,
+    key_mode: KeyMode<'input, 'table>,
 }
 
 /// Key parsing strategy for binary VDF formats.
-enum KeyMode {
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+enum KeyMode<'input, 'table> {
     /// Parse keys as null-terminated UTF-8 strings (v28, shortcuts)
+    #[default]
     NullTerminated,
     /// Parse keys as u32 indices into string table (v29)
-    StringTableIndex,
+    StringTableIndex {
+        string_table: &'table StringTable<'input>,
+    },
 }
 
 /// String table for v29 appinfo format.
 ///
 /// Encapsulates pre-extracted strings from the string table section,
 /// enabling O(1) lookups by index.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 struct StringTable<'a> {
     strings: Vec<&'a str>,
 }
@@ -48,27 +125,30 @@ impl<'a> StringTable<'a> {
                 max: self.strings.len(),
             })
     }
+
+    /// Returns the number of strings in the table.
+    fn len(&self) -> usize {
+        self.strings.len()
+    }
+
+    /// Returns `true` if the table contains no strings.
+    fn is_empty(&self) -> bool {
+        self.strings.is_empty()
+    }
 }
 
-impl KeyMode {
+impl<'a> KeyMode<'a, '_> {
     /// Parse a key from input according to this mode.
-    fn parse_key<'a>(
-        &self,
-        input: &'a [u8],
-        config: &ParseConfig<'a>,
-    ) -> Result<(&'a [u8], Cow<'a, str>)> {
+    fn parse_key(&self, input: &'a [u8]) -> Result<(&'a [u8], Cow<'a, str>)> {
         match self {
             KeyMode::NullTerminated => {
                 let (rest, s) = parse_null_terminated_string_borrowed(input)?;
                 Ok((rest, Cow::Borrowed(s)))
             }
-            KeyMode::StringTableIndex => {
-                if input.len() < 4 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                let index = u32::from_le_bytes([input[0], input[1], input[2], input[3]]) as usize;
-                let s = config.string_table.as_ref().unwrap().get(index)?;
-                Ok((&input[4..], Cow::Borrowed(s)))
+            KeyMode::StringTableIndex { string_table } => {
+                let (rest, index) = ensure_read_u32_le(input)?;
+                let s = string_table.get(index as usize)?;
+                Ok((rest, Cow::Borrowed(s)))
             }
         }
     }
@@ -82,8 +162,7 @@ impl KeyMode {
 /// but actual parsed values (including string table entries) are borrowed.
 pub fn parse(input: &[u8]) -> Result<Vdf<'_>> {
     // Check if this looks like appinfo format (starts with magic)
-    if input.len() >= 4 {
-        let magic = u32::from_le_bytes([input[0], input[1], input[2], input[3]]);
+    if let Some(magic) = read_u32_le(input) {
         if magic == APPINFO_MAGIC_28 || magic == APPINFO_MAGIC_29 {
             // parse_appinfo returns Vdf<'static>, which is compatible with Vdf<'_>
             return parse_appinfo(input);
@@ -109,10 +188,7 @@ pub fn parse(input: &[u8]) -> Result<Vdf<'_>> {
 ///
 /// All strings are null-terminated.
 pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'_>> {
-    let config = ParseConfig {
-        string_table: None,
-        key_mode: KeyMode::NullTerminated,
-    };
+    let config = ParseConfig::default();
     let (_rest, obj) = parse_object(input, &config)?;
 
     Ok(Vdf {
@@ -143,22 +219,25 @@ pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'_>> {
 ///   - Then the VDF data for the app (starts with 0x00)
 /// - String table (if magic == 0x07564429, at string_table_offset)
 ///
-/// App entry header is 68 bytes.
+/// App entry header is `APPINFO_ENTRY_HEADER_SIZE` (68) bytes.
 pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
     if input.len() < 16 {
         return Err(Error::UnexpectedEndOfInput);
     }
 
-    let magic = u32::from_le_bytes([input[0], input[1], input[2], input[3]]);
-    let universe = u32::from_le_bytes([input[4], input[5], input[6], input[7]]);
+    let Some(magic) = read_u32_le(input) else {
+        return Err(Error::UnexpectedEndOfInput);
+    };
+    let Some(universe) = read_u32_le(&input[4..]) else {
+        return Err(Error::UnexpectedEndOfInput);
+    };
 
     let (string_table_offset, mut rest) = match magic {
         APPINFO_MAGIC_28 => (None, &input[8..]),
         APPINFO_MAGIC_29 => {
-            let offset = u64::from_le_bytes([
-                input[8], input[9], input[10], input[11], input[12], input[13], input[14],
-                input[15],
-            ]);
+            let Some(offset) = read_u64_le(&input[8..]) else {
+                return Err(Error::UnexpectedEndOfInput);
+            };
             (Some(offset as usize), &input[16..])
         }
         _ => {
@@ -168,22 +247,27 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
 
     // Parse the string table if present
     let string_table = if let Some(offset) = string_table_offset {
-        let table_start = offset;
-        if table_start >= input.len() {
+        if offset >= input.len() {
             return Err(Error::UnexpectedEndOfInput);
         }
-        Some(parse_string_table(&input[table_start..])?)
+        Some(parse_string_table(&input[offset..])?)
     } else {
         None
     };
 
     let mut obj = Obj::new();
 
-    // Parse each app entry until we run out of data
-    // App entry header: AppID(4) + Size(4) + InfoState(4) + LastUpdated(4) +
-    //                  AccessToken(8) + SHA1(20) + ChangeNumber(4) + BinarySHA1(20) = 68 bytes
     // Calculate where apps end (at string table for v29, or EOF for v28)
     let apps_end_offset = string_table_offset.unwrap_or(input.len());
+
+    // Use v29 format (string table) if string_table_offset is Some
+    let config = ParseConfig {
+        key_mode: if let Some(string_table) = &string_table {
+            KeyMode::StringTableIndex { string_table }
+        } else {
+            KeyMode::NullTerminated
+        },
+    };
 
     loop {
         // Check if we've reached the end of apps section
@@ -192,43 +276,35 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
             break;
         }
 
-        if rest.len() < 68 {
-            break;
+        // Not enough data for an app entry header.
+        if rest.len() < APPINFO_ENTRY_HEADER_SIZE {
+            return Err(Error::UnexpectedEndOfInput);
         }
 
         // App ID (offset 0)
-        let app_id = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]);
+        let Some(app_id) = read_u32_le(rest) else {
+            return Err(Error::UnexpectedEndOfInput);
+        };
         if app_id == 0 {
             break;
         }
 
-        // Size (offset 4) - includes everything AFTER this field (60 bytes header + VDF data)
-        let size = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]) as usize;
+        // Size (offset 4) - includes everything AFTER this field (APPINFO_HEADER_AFTER_SIZE bytes + VDF data)
+        let Some(size) = read_u32_le(&rest[4..]) else {
+            return Err(Error::UnexpectedEndOfInput);
+        };
+        let size = size as usize;
 
-        // The 60 bytes after the size field:
-        // info_state(4) + last_updated(4) + access_token(8) + sha1_text(20) + change_number(4) + sha1_binary(20)
-        let header_after_size = 60;
-
-        // VDF data starts after 68-byte header (app_id(4) + size(4) + header_after_size(60))
-        let vdf_size = size - header_after_size;
-        let vdf_start = 68;
-        let vdf_end = vdf_start + vdf_size;
+        // VDF data starts after the header
+        let vdf_size = size - APPINFO_HEADER_AFTER_SIZE;
+        let vdf_end = APPINFO_VDF_DATA_OFFSET + vdf_size;
 
         if vdf_end > rest.len() {
             return Err(Error::UnexpectedEndOfInput);
         }
 
-        let vdf_data = &rest[vdf_start..vdf_end];
+        let vdf_data = &rest[APPINFO_VDF_DATA_OFFSET..vdf_end];
 
-        // Use v29 format (string table) if string_table_offset is Some
-        let config = ParseConfig {
-            string_table: string_table.clone(),
-            key_mode: if string_table_offset.is_some() {
-                KeyMode::StringTableIndex
-            } else {
-                KeyMode::NullTerminated
-            },
-        };
         let (_vdf_rest, app_obj) = parse_object(vdf_data, &config)?;
 
         // Insert with app ID as key
@@ -249,7 +325,7 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
 /// # Parameters
 /// - `input`: The binary data to parse
 /// - `config`: Parse configuration including string table and key parsing strategy
-fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a>) -> Result<(&'a [u8], Obj<'a>)> {
+fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'a [u8], Obj<'a>)> {
     let mut obj = Obj::new();
     let mut rest = input;
 
@@ -271,7 +347,7 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a>) -> Result<(&'a [u
                     }
                     Some(BinaryType::None) => {
                         // Map entry: 0x00 [key] { ... entries ... }
-                        let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
+                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
                         let (new_rest, nested_obj) = parse_object(new_rest, config)?;
                         obj.insert(key, Value::Obj(nested_obj));
                         rest = new_rest;
@@ -279,43 +355,43 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a>) -> Result<(&'a [u
                     Some(BinaryType::String) => {
                         // String entry: 0x01 [key] [value]
                         // VALUE is ALWAYS inline null-terminated string (never from string table!)
-                        let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
+                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
                         let (new_rest, value) = parse_null_terminated_string_borrowed(new_rest)?;
                         obj.insert(key, Value::Str(Cow::Borrowed(value)));
                         rest = new_rest;
                     }
                     Some(BinaryType::Int32) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
+                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
                         let (new_rest, value) = parse_value_int32(new_rest)?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
                     Some(BinaryType::UInt64) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
+                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
                         let (new_rest, value) = parse_value_uint64(new_rest)?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
                     Some(BinaryType::Float) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
+                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
                         let (new_rest, value) = parse_value_float(new_rest)?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
                     Some(BinaryType::Ptr) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
+                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
                         let (new_rest, value) = parse_value_ptr(new_rest)?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
                     Some(BinaryType::WString) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
+                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
                         let (new_rest, value) = parse_value_wstring(new_rest)?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
                     Some(BinaryType::Color) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
+                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
                         let (new_rest, value) = parse_value_color(new_rest)?;
                         obj.insert(key, value);
                         rest = new_rest;
@@ -337,40 +413,32 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a>) -> Result<(&'a [u
 
 /// Parse an Int32 value (4 bytes, little-endian).
 fn parse_value_int32<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
-    if input.len() < 4 {
-        return Err(Error::UnexpectedEndOfInput);
-    }
-    let value = i32::from_le_bytes([input[0], input[1], input[2], input[3]]);
+    let arr = <[u8; 4]>::try_from(input.get(..4).ok_or(Error::UnexpectedEndOfInput)?)
+        .map_err(|_| Error::UnexpectedEndOfInput)?;
+    let value = i32::from_le_bytes(arr);
     Ok((&input[4..], Value::I32(value)))
 }
 
 /// Parse a UInt64 value (8 bytes, little-endian).
 fn parse_value_uint64<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
-    if input.len() < 8 {
-        return Err(Error::UnexpectedEndOfInput);
-    }
-    let value = u64::from_le_bytes([
-        input[0], input[1], input[2], input[3], input[4], input[5], input[6], input[7],
-    ]);
+    let arr = <[u8; 8]>::try_from(input.get(..8).ok_or(Error::UnexpectedEndOfInput)?)
+        .map_err(|_| Error::UnexpectedEndOfInput)?;
+    let value = u64::from_le_bytes(arr);
     Ok((&input[8..], Value::U64(value)))
 }
 
 /// Parse a Float value (4 bytes, little-endian).
 fn parse_value_float<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
-    if input.len() < 4 {
-        return Err(Error::UnexpectedEndOfInput);
-    }
-    let value = f32::from_le_bytes([input[0], input[1], input[2], input[3]]);
+    let arr = <[u8; 4]>::try_from(input.get(..4).ok_or(Error::UnexpectedEndOfInput)?)
+        .map_err(|_| Error::UnexpectedEndOfInput)?;
+    let value = f32::from_le_bytes(arr);
     Ok((&input[4..], Value::Float(value)))
 }
 
 /// Parse a Pointer value (4 bytes, little-endian).
 fn parse_value_ptr<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
-    if input.len() < 4 {
-        return Err(Error::UnexpectedEndOfInput);
-    }
-    let value = u32::from_le_bytes([input[0], input[1], input[2], input[3]]);
-    Ok((&input[4..], Value::Pointer(value)))
+    let (rest, value) = ensure_read_u32_le(input)?;
+    Ok((rest, Value::Pointer(value)))
 }
 
 /// Parse a WideString value (UTF-16LE, null-terminated).
@@ -381,14 +449,9 @@ fn parse_value_wstring<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
 
 /// Parse a Color value (4 bytes RGBA).
 fn parse_value_color<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
-    if input.len() < 4 {
-        return Err(Error::UnexpectedEndOfInput);
-    }
-    let r = input[0];
-    let g = input[1];
-    let b = input[2];
-    let a = input[3];
-    Ok((&input[4..], Value::Color([r, g, b, a])))
+    let arr = <[u8; 4]>::try_from(input.get(..4).ok_or(Error::UnexpectedEndOfInput)?)
+        .map_err(|_| Error::UnexpectedEndOfInput)?;
+    Ok((&input[4..], Value::Color(arr)))
 }
 
 // ===== String Parsing Functions =====
@@ -426,13 +489,15 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
         return Err(Error::UnexpectedEndOfInput);
     }
 
-    // Convert UTF-16LE to String
-    let utf16_data: Vec<u16> = (0..i)
-        .step_by(2)
-        .map(|j| u16::from_le_bytes([input[j], input[j + 1]]))
-        .collect();
+    // Convert UTF-16LE to u16 code units
+    let utf16_units = input[..i]
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]));
 
-    let string = String::from_utf16(&utf16_data).map_err(|_| Error::InvalidUtf8 { offset: 0 })?;
+    // Decode UTF-16 to char and then to String
+    let string: String = std::char::decode_utf16(utf16_units)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| Error::InvalidUtf8 { offset: 0 })?;
 
     Ok((&input[i + 2..], string))
 }
@@ -445,30 +510,20 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
 /// - 4 bytes: string_count (little-endian u32)
 /// - Then string_count null-terminated UTF-8 strings
 fn parse_string_table(input: &[u8]) -> Result<StringTable<'_>> {
-    if input.len() < 4 {
-        return Err(Error::UnexpectedEndOfInput);
-    }
-
-    // Read string_count (4 bytes, little-endian)
-    let string_count = u32::from_le_bytes([input[0], input[1], input[2], input[3]]) as usize;
+    let (rest, string_count) = ensure_read_u32_le(input)?;
+    let string_count = string_count as usize;
 
     let mut strings = Vec::with_capacity(string_count);
-    let mut rest = &input[4..];
+    let mut rest = rest;
 
     // Extract each null-terminated string
     for _ in 0..string_count {
         if rest.is_empty() {
             return Err(Error::UnexpectedEndOfInput);
         }
-        let null_pos = rest
-            .iter()
-            .position(|&b| b == 0)
-            .ok_or(Error::UnexpectedEndOfInput)?;
-        let string_bytes = &rest[..null_pos];
-        let string =
-            std::str::from_utf8(string_bytes).map_err(|_| Error::InvalidUtf8 { offset: 0 })?;
+        let (new_rest, string) = parse_null_terminated_string_borrowed(rest)?;
         strings.push(string);
-        rest = &rest[null_pos + 1..];
+        rest = new_rest;
     }
 
     Ok(StringTable { strings })

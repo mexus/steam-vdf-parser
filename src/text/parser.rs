@@ -2,13 +2,13 @@
 
 use std::borrow::Cow;
 
-use winnow::prelude::*;
+use winnow::ascii::{line_ending, multispace1};
 use winnow::combinator::{alt, delimited, preceded, repeat};
-use winnow::token::{one_of, take_till};
-use winnow::ascii::{multispace1, line_ending};
 use winnow::error::{ContextError, StrContext};
+use winnow::prelude::*;
+use winnow::token::{one_of, take_till};
 
-use crate::error::{parse_error, Result};
+use crate::error::{Result, parse_error};
 use crate::value::{Obj, Value, Vdf};
 
 /// Parse a VDF document from text format.
@@ -55,7 +55,9 @@ fn quoted_string_cow<'i>(input: &mut &'i str) -> ModalResult<Cow<'i, str>> {
     '"'.parse_next(input)?;
 
     // Check if there are any escape sequences
-    let content_end = input.find(|c: char| c == '\\' || c == '"').unwrap_or(input.len());
+    let content_end = input
+        .find(|c: char| c == '\\' || c == '"')
+        .unwrap_or(input.len());
 
     if content_end < input.len() && input[content_end..].starts_with('\\') {
         // Has escape sequences - need to process them
@@ -91,9 +93,7 @@ fn quoted_string_cow<'i>(input: &mut &'i str) -> ModalResult<Cow<'i, str>> {
                 }
             } else {
                 // EOF before closing quote - fail
-                return Err(winnow::error::ErrMode::Backtrack(
-                    ContextError::new(),
-                ));
+                return Err(winnow::error::ErrMode::Backtrack(ContextError::new()));
             }
         }
     } else {
@@ -128,9 +128,7 @@ fn quoted_string<'i>(input: &mut &'i str) -> ModalResult<&'i str> {
     }
 
     if end == 0 {
-        return Err(winnow::error::ErrMode::Backtrack(
-            ContextError::new(),
-        ));
+        return Err(winnow::error::ErrMode::Backtrack(ContextError::new()));
     }
 
     let result = &input[..end];
@@ -154,11 +152,7 @@ fn unquoted_string<'i>(input: &mut &'i str) -> ModalResult<&'i str> {
 fn object<'i>(input: &mut &'i str) -> ModalResult<Obj<'i>> {
     preceded(
         whitespace,
-        delimited(
-            '{',
-            object_body,
-            preceded(whitespace, '}'),
-        ),
+        delimited('{', object_body, preceded(whitespace, '}')),
     )
     .context(StrContext::Label("object"))
     .parse_next(input)
@@ -197,12 +191,12 @@ fn kv_pair<'i>(input: &mut &'i str) -> ModalResult<(&'i str, Value<'i>)> {
         match c {
             '{' => object.map(Value::Obj).parse_next(input)?,
             '"' => quoted_string_cow.map(Value::Str).parse_next(input)?,
-            _ => unquoted_string.map(|s| Value::Str(Cow::Borrowed(s))).parse_next(input)?,
+            _ => unquoted_string
+                .map(|s| Value::Str(Cow::Borrowed(s)))
+                .parse_next(input)?,
         }
     } else {
-        return Err(winnow::error::ErrMode::Backtrack(
-            ContextError::new(),
-        ));
+        return Err(winnow::error::ErrMode::Backtrack(ContextError::new()));
     };
 
     Ok((key, value))
@@ -210,20 +204,16 @@ fn kv_pair<'i>(input: &mut &'i str) -> ModalResult<(&'i str, Value<'i>)> {
 
 /// Skip whitespace and line comments.
 fn whitespace<'i>(input: &mut &'i str) -> ModalResult<()> {
-    repeat(
-        0..,
-        alt((
-            multispace1.void(),
-            line_comment.void(),
-        )),
-    )
-    .parse_next(input)
+    repeat(0.., alt((multispace1.void(), line_comment.void()))).parse_next(input)
 }
 
 /// Parse a line comment (// to newline).
 fn line_comment<'i>(input: &mut &'i str) -> ModalResult<()> {
-    preceded("//", alt((line_ending.void(), take_till(0.., ['\r', '\n']).void())))
-        .parse_next(input)
+    preceded(
+        "//",
+        alt((line_ending.void(), take_till(0.., ['\r', '\n']).void())),
+    )
+    .parse_next(input)
 }
 
 #[cfg(test)]
