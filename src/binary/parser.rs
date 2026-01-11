@@ -48,39 +48,10 @@ fn read_u64_le(input: &[u8]) -> Option<u64> {
     })
 }
 
-/// Read a little-endian i32 from the start of a slice.
-///
-/// Returns `None` if the slice is too small.
-#[inline]
-fn read_i32_le(input: &[u8]) -> Option<i32> {
-    input.get(..4).and_then(|bytes| {
-        let arr: [u8; 4] = bytes.try_into().ok()?;
-        Some(i32::from_le_bytes(arr))
-    })
-}
-
-/// Read a little-endian f32 from the start of a slice.
-///
-/// Returns `None` if the slice is too small.
-#[inline]
-fn read_f32_le(input: &[u8]) -> Option<f32> {
-    input.get(..4).and_then(|bytes| {
-        let arr: [u8; 4] = bytes.try_into().ok()?;
-        Some(f32::from_le_bytes(arr))
-    })
-}
-
 /// Read a little-endian u32 from the start of a slice, returning an error if too small.
 fn ensure_read_u32_le(input: &[u8]) -> Result<(&[u8], u32)> {
     read_u32_le(input)
         .map(|value| (&input[4..], value))
-        .ok_or(Error::UnexpectedEndOfInput)
-}
-
-/// Read a little-endian u64 from the start of a slice, returning an error if too small.
-fn ensure_read_u64_le(input: &[u8]) -> Result<(&[u8], u64)> {
-    read_u64_le(input)
-        .map(|value| (&input[8..], value))
         .ok_or(Error::UnexpectedEndOfInput)
 }
 
@@ -125,16 +96,6 @@ impl<'a> StringTable<'a> {
                 max: self.strings.len(),
             })
     }
-
-    /// Returns the number of strings in the table.
-    fn len(&self) -> usize {
-        self.strings.len()
-    }
-
-    /// Returns `true` if the table contains no strings.
-    fn is_empty(&self) -> bool {
-        self.strings.is_empty()
-    }
 }
 
 impl<'a> KeyMode<'a, '_> {
@@ -163,10 +124,11 @@ impl<'a> KeyMode<'a, '_> {
 pub fn parse(input: &[u8]) -> Result<Vdf<'_>> {
     // Check if this looks like appinfo format (starts with magic)
     if let Some(magic) = read_u32_le(input)
-        && (magic == APPINFO_MAGIC_28 || magic == APPINFO_MAGIC_29) {
-            // parse_appinfo returns Vdf<'static>, which is compatible with Vdf<'_>
-            return parse_appinfo(input);
-        }
+        && (magic == APPINFO_MAGIC_28 || magic == APPINFO_MAGIC_29)
+    {
+        // parse_appinfo returns Vdf<'static>, which is compatible with Vdf<'_>
+        return parse_appinfo(input);
+    }
 
     // Otherwise, parse as shortcuts format (zero-copy)
     parse_shortcuts(input)
