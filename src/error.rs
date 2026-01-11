@@ -5,6 +5,16 @@ use std::fmt;
 /// Result type for VDF operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Create a parse error with truncated input snippet (max 50 chars).
+pub fn parse_error(input: &str, offset: usize, context: impl Into<String>) -> Error {
+    let snippet = input.chars().take(50).collect::<String>();
+    Error::ParseError {
+        input: snippet,
+        offset,
+        context: context.into(),
+    }
+}
+
 /// Errors that can occur during VDF parsing.
 #[derive(Debug)]
 pub enum Error {

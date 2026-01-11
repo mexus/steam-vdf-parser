@@ -1,9 +1,14 @@
-//! Text VDF parser.
+//! Text VDF parser powered by winnow.
 
 use std::borrow::Cow;
 
-use crate::error::Error;
-use crate::error::Result;
+use winnow::prelude::*;
+use winnow::combinator::{alt, delimited, preceded, repeat};
+use winnow::token::{one_of, take_till};
+use winnow::ascii::{multispace1, line_ending};
+use winnow::error::{ContextError, StrContext};
+
+use crate::error::{parse_error, Result};
 use crate::value::{Obj, Value, Vdf};
 
 /// Parse a VDF document from text format.
@@ -21,30 +26,15 @@ use crate::value::{Obj, Value, Vdf};
 /// assert_eq!(vdf.key, "root");
 /// ```
 pub fn parse(input: &str) -> Result<Vdf<'_>> {
-    let input = input.trim_start();
+    let mut input = input.trim_start();
 
-    // Parse the root key followed by an object
-    let (input, key) = token(input).map_err(|e| Error::ParseError {
-        input: input.to_string(),
-        offset: 0,
-        context: format!("Failed to parse key: {:?}", e),
-    })?;
+    let key = token
+        .parse_next(&mut input)
+        .map_err(|_| parse_error(&input, 0, "expected root key"))?;
 
-    let (input, _) = ws(input).map_err(|e| Error::ParseError {
-        input: input.to_string(),
-        offset: 0,
-        context: format!("Failed to parse whitespace: {:?}", e),
-    })?;
-
-    // The value should be an object
-    let (input, obj) = object(input).map_err(|e| Error::ParseError {
-        input: input.to_string(),
-        offset: 0,
-        context: format!("Failed to parse object: {:?}", e),
-    })?;
-
-    // Allow trailing content
-    let _ = input;
+    let obj = object
+        .parse_next(&mut input)
+        .map_err(|_| parse_error(&input, 0, "expected root object"))?;
 
     Ok(Vdf {
         key: Cow::Borrowed(key),
@@ -52,177 +42,189 @@ pub fn parse(input: &str) -> Result<Vdf<'_>> {
     })
 }
 
-/// Parse a key-value pair from text input.
-///
-/// Returns (remaining input, (key, value)).
-fn kv_pair(input: &str) -> core::result::Result<(&str, (&str, Value<'_>)), ParseError> {
-    let (input, _) = ws(input)?;
-    let (input, key) = token(input)?;
-    let (input, _) = ws(input)?;
-
-    // Look ahead to see if value is object or string
-    let (input, value) = if input.starts_with('{') {
-        let (input, obj) = object(input)?;
-        (input, Value::Obj(obj))
-    } else {
-        let (input, s) = token(input)?;
-        (input, Value::Str(Cow::Borrowed(s)))
-    };
-
-    let (input, _) = ws(input)?;
-
-    Ok((input, (key, value)))
+/// Parse a token (either quoted or unquoted).
+fn token<'i>(input: &mut &'i str) -> ModalResult<&'i str> {
+    preceded(whitespace, alt((quoted_string, unquoted_string))).parse_next(input)
 }
 
-/// Parse an object (recursive block of key-value pairs).
+/// Parse a quoted string, returning a Cow (borrowed if no escapes, owned if escapes processed).
 ///
-/// Returns (remaining input, object).
-fn object(input: &str) -> core::result::Result<(&str, Obj<'_>), ParseError> {
-    if !input.starts_with('{') {
-        return Err(ParseError::Expected("{"));
+/// Handles escape sequences: \n, \t, \r, \\, \"
+fn quoted_string_cow<'i>(input: &mut &'i str) -> ModalResult<Cow<'i, str>> {
+    // Parse opening quote
+    '"'.parse_next(input)?;
+
+    // Check if there are any escape sequences
+    let content_end = input.find(|c: char| c == '\\' || c == '"').unwrap_or(input.len());
+
+    if content_end < input.len() && input[content_end..].starts_with('\\') {
+        // Has escape sequences - need to process them
+        let mut result = String::from(&input[..content_end]);
+        *input = &input[content_end..];
+
+        loop {
+            // Check for closing quote
+            if let Some(c) = input.chars().next() {
+                if c == '"' {
+                    *input = &input[c.len_utf8()..];
+                    return Ok(Cow::Owned(result));
+                }
+                if c == '\\' {
+                    // Escape sequence - consume backslash
+                    *input = &input[c.len_utf8()..];
+
+                    // Get escaped character
+                    let escaped = one_of(('n', 't', 'r', '\\', '"'))
+                        .map(|c| match c {
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            '\\' => '\\',
+                            '"' => '"',
+                            _ => unreachable!(),
+                        })
+                        .parse_next(input)?;
+                    result.push(escaped);
+                } else {
+                    result.push(c);
+                    *input = &input[c.len_utf8()..];
+                }
+            } else {
+                // EOF before closing quote - fail
+                return Err(winnow::error::ErrMode::Backtrack(
+                    ContextError::new(),
+                ));
+            }
+        }
+    } else {
+        // No escapes - zero copy path
+        let content = &input[..content_end];
+        *input = &input[content_end..];
+
+        // Parse closing quote
+        '"'.parse_next(input)?;
+
+        Ok(Cow::Borrowed(content))
     }
-    let mut input = &input[1..];
+}
 
-    let mut obj = Obj::new();
+/// Parse a quoted string (borrowed version for key parsing).
+/// Keys with escapes will fail - use quoted_string_cow for values that may have escapes.
+fn quoted_string<'i>(input: &mut &'i str) -> ModalResult<&'i str> {
+    '"'.parse_next(input)?;
 
-    // Parse key-value pairs until we hit '}'
-    loop {
-        let (rest, _) = ws(input)?;
-        input = rest;
-
-        // Check for end of object
-        if input.starts_with('}') {
-            input = &input[1..];
+    // Find closing quote, checking for escapes
+    let mut end = 0;
+    let mut chars = input.char_indices();
+    while let Some((idx, c)) = chars.next() {
+        if c == '"' {
+            end = idx;
             break;
         }
-
-        let (rest, (key, value)) = kv_pair(input)?;
-        obj.insert(Cow::Borrowed(key), value);
-        input = rest;
-    }
-
-    Ok((input, obj))
-}
-
-/// Parse a token (either quoted or unquoted).
-///
-/// Returns (remaining input, token).
-fn token(input: &str) -> core::result::Result<(&str, &str), ParseError> {
-    // Try quoted string first
-    if input.starts_with('"') {
-        return quoted_string(input);
-    }
-
-    // Otherwise, parse unquoted token
-    unquoted_string(input)
-}
-
-/// Parse a quoted string.
-///
-/// Returns (remaining input, string content).
-fn quoted_string(input: &str) -> core::result::Result<(&str, &str), ParseError> {
-    if !input.starts_with('"') {
-        return Err(ParseError::Expected("\""));
-    }
-    let input = &input[1..];
-
-    // Parse until closing quote, handling escapes
-    let mut escaped = false;
-    let mut end = 0;
-
-    for (idx, ch) in input.char_indices() {
-        if escaped {
-            escaped = false;
-            end = idx + ch.len_utf8();
-            continue;
+        if c == '\\' {
+            // Skip escaped character
+            chars.next();
         }
-        if ch == '\\' {
-            escaped = true;
-            end = idx + ch.len_utf8();
-            continue;
-        }
-        if ch == '"' {
-            // Found the end - return the string content
-            let result = &input[..end];
-            let rest = &input[idx + 1..];
-            return Ok((rest, result));
-        }
-        end = idx + ch.len_utf8();
     }
 
-    // Unclosed string - return error
-    Err(ParseError::UnclosedString)
+    if end == 0 {
+        return Err(winnow::error::ErrMode::Backtrack(
+            ContextError::new(),
+        ));
+    }
+
+    let result = &input[..end];
+    *input = &input[end + '"'.len_utf8()..];
+
+    Ok(result)
 }
 
 /// Parse an unquoted string.
 ///
 /// Unquoted strings end at whitespace, `{`, `}`, or `"`.
-///
-/// Returns (remaining input, token).
-fn unquoted_string(input: &str) -> core::result::Result<(&str, &str), ParseError> {
-    let mut end = 0;
+fn unquoted_string<'i>(input: &mut &'i str) -> ModalResult<&'i str> {
+    take_till(1.., |c: char| {
+        c.is_whitespace() || c == '{' || c == '}' || c == '"'
+    })
+    .context(StrContext::Label("token"))
+    .parse_next(input)
+}
 
-    for (idx, ch) in input.char_indices() {
-        if ch.is_whitespace() || ch == '{' || ch == '}' || ch == '"' {
+/// Parse an object (recursive block of key-value pairs).
+fn object<'i>(input: &mut &'i str) -> ModalResult<Obj<'i>> {
+    preceded(
+        whitespace,
+        delimited(
+            '{',
+            object_body,
+            preceded(whitespace, '}'),
+        ),
+    )
+    .context(StrContext::Label("object"))
+    .parse_next(input)
+}
+
+/// Parse the body of an object (key-value pairs until closing brace).
+fn object_body<'i>(input: &mut &'i str) -> ModalResult<Obj<'i>> {
+    let mut obj = Obj::new();
+
+    loop {
+        // Skip whitespace
+        whitespace.parse_next(input)?;
+
+        // Check for closing brace
+        if input.starts_with('}') {
             break;
         }
-        end = idx + ch.len_utf8();
+
+        // Parse a key-value pair
+        let (key, value) = kv_pair.parse_next(input)?;
+        obj.insert(Cow::Borrowed(key), value);
     }
 
-    if end == 0 {
-        return Err(ParseError::Expected("token"));
-    }
-
-    Ok((&input[end..], &input[..end]))
+    Ok(obj)
 }
 
-/// Skip zero or more whitespace characters or line comments.
-///
-/// Returns (remaining input, ()).
-fn ws(input: &str) -> core::result::Result<(&str, ()), ParseError> {
-    let mut rest = input;
+/// Parse a key-value pair.
+fn kv_pair<'i>(input: &mut &'i str) -> ModalResult<(&'i str, Value<'i>)> {
+    let key = token.parse_next(input)?;
 
-    while !rest.is_empty() {
-        let first = rest.chars().next().unwrap();
+    // Skip whitespace before value
+    whitespace.parse_next(input)?;
 
-        // Whitespace
-        if first.is_whitespace() {
-            rest = &rest[first.len_utf8()..];
-            continue;
+    // Parse the value
+    let value = if let Some(c) = input.chars().next() {
+        match c {
+            '{' => object.map(Value::Obj).parse_next(input)?,
+            '"' => quoted_string_cow.map(Value::Str).parse_next(input)?,
+            _ => unquoted_string.map(|s| Value::Str(Cow::Borrowed(s))).parse_next(input)?,
         }
+    } else {
+        return Err(winnow::error::ErrMode::Backtrack(
+            ContextError::new(),
+        ));
+    };
 
-        // Line comment
-        if rest.starts_with("//") {
-            // Skip until newline or end
-            let newline_pos = rest.find('\n').unwrap_or(rest.len());
-            rest = &rest[newline_pos..];
-            continue;
-        }
-
-        // Not whitespace or comment, stop
-        break;
-    }
-
-    Ok((rest, ()))
+    Ok((key, value))
 }
 
-/// Parse error type for internal parsing.
-#[derive(Debug)]
-enum ParseError {
-    Expected(&'static str),
-    UnclosedString,
+/// Skip whitespace and line comments.
+fn whitespace<'i>(input: &mut &'i str) -> ModalResult<()> {
+    repeat(
+        0..,
+        alt((
+            multispace1.void(),
+            line_comment.void(),
+        )),
+    )
+    .parse_next(input)
 }
 
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ParseError::Expected(s) => write!(f, "expected {}", s),
-            ParseError::UnclosedString => write!(f, "unclosed string"),
-        }
-    }
+/// Parse a line comment (// to newline).
+fn line_comment<'i>(input: &mut &'i str) -> ModalResult<()> {
+    preceded("//", alt((line_ending.void(), take_till(0.., ['\r', '\n']).void())))
+        .parse_next(input)
 }
-
-impl std::error::Error for ParseError {}
 
 #[cfg(test)]
 mod tests {
@@ -237,7 +239,6 @@ mod tests {
         let vdf = parse(input).unwrap();
         assert_eq!(vdf.key, "root");
 
-        // vdf.value is the object containing the key-value pairs
         let obj = vdf.as_obj().unwrap();
         let value = obj.get("key").and_then(|v| v.as_str());
         assert_eq!(value, Some(&Cow::Borrowed("value")));
@@ -308,5 +309,121 @@ mod tests {
             obj.get("count").and_then(|v| v.as_str()),
             Some(&Cow::Borrowed("42"))
         );
+    }
+
+    #[test]
+    fn test_escape_sequences() {
+        let test_cases: &[(&str, &str)] = &[
+            (r#""test\nline""#, "test\nline"),
+            (r#""test\ttab""#, "test\ttab"),
+            (r#""test\\backslash""#, "test\\backslash"),
+            (r#""test\"quote""#, "test\"quote"),
+            (r#""test\rreturn""#, "test\rreturn"),
+        ];
+
+        for (input, expected) in test_cases {
+            let full_input = format!(r#""root"{{"key" {}}}"#, input);
+            let vdf = parse(&full_input).unwrap();
+            let obj = vdf.as_obj().unwrap();
+            let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
+            assert_eq!(value.as_ref(), *expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_escape_sequences_in_nested_objects() {
+        let input = r#""root"
+        {
+            "outer"
+            {
+                "key" "value\nwith\nnewlines"
+            }
+        }"#;
+        let vdf = parse(input).unwrap();
+        let outer = vdf
+            .as_obj()
+            .unwrap()
+            .get("outer")
+            .and_then(|v| v.as_obj())
+            .unwrap();
+        let value = outer.get("key").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(value.as_ref(), "value\nwith\nnewlines");
+    }
+
+    #[test]
+    fn test_mixed_escape_sequences() {
+        let input = r#""root"{"key" "line1\nline2\ttab\\slash\"quote"}"#;
+        let vdf = parse(input).unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(value.as_ref(), "line1\nline2\ttab\\slash\"quote");
+    }
+
+    #[test]
+    fn test_unquoted_token_no_escape_processing() {
+        let input = r#"root{key value\nnotescaped}"#;
+        let vdf = parse(input).unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
+        // Unquoted tokens should have literal backslash-n
+        assert_eq!(value.as_ref(), r#"value\nnotescaped"#);
+    }
+
+    #[test]
+    fn test_quoted_string_without_escapes_zero_copy() {
+        let input = r#""root"{"key" "value"}"#;
+        let vdf = parse(input).unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
+        // Without escapes, should be borrowed
+        assert!(matches!(value, Cow::Borrowed("value")));
+        assert_eq!(value.as_ref(), "value");
+    }
+
+    #[test]
+    fn test_quoted_string_with_escapes_owned() {
+        let input = r#""root"{"key" "value\nwith\nescape"}"#;
+        let vdf = parse(input).unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
+        // With escapes, should be owned
+        assert!(matches!(value, Cow::Owned(_)));
+        assert_eq!(value.as_ref(), "value\nwith\nescape");
+    }
+
+    #[test]
+    fn test_empty_object() {
+        let input = r#""root"{}"#;
+        let vdf = parse(input).unwrap();
+        let obj = vdf.as_obj().unwrap();
+        assert!(obj.is_empty());
+    }
+
+    #[test]
+    fn test_deeply_nested_objects() {
+        let input = r#""root"
+        {
+            "level1"
+            {
+                "level2"
+                {
+                    "level3"
+                    {
+                        "key" "value"
+                    }
+                }
+            }
+        }"#;
+        let vdf = parse(input).unwrap();
+        let level1 = vdf
+            .as_obj()
+            .unwrap()
+            .get("level1")
+            .and_then(|v| v.as_obj())
+            .unwrap();
+        let level2 = level1.get("level2").and_then(|v| v.as_obj()).unwrap();
+        let level3 = level2.get("level3").and_then(|v| v.as_obj()).unwrap();
+        let value = level3.get("key").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(value.as_ref(), "value");
     }
 }
