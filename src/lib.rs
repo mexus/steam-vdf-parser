@@ -78,7 +78,7 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
 /// This is a convenience function that reads a file and parses it.
 /// Returns an owned `Vdf<'static>` since the file content is owned.
 pub fn parse_text_file(path: impl AsRef<std::path::Path>) -> Result<Vdf<'static>> {
-    let content = std::fs::read_to_string(path)?;
+    let content = std::fs::read_to_string(path).map_err(Error::IoError)?;
     Ok(parse_text(&content)?.into_owned())
 }
 
@@ -87,7 +87,7 @@ pub fn parse_text_file(path: impl AsRef<std::path::Path>) -> Result<Vdf<'static>
 /// This is a convenience function that reads a file and parses it.
 /// Returns an owned `Vdf<'static>` since the file content is owned.
 pub fn parse_binary_file(path: impl AsRef<std::path::Path>) -> Result<Vdf<'static>> {
-    let content = std::fs::read(path)?;
+    let content = std::fs::read(path).map_err(Error::IoError)?;
     Ok(parse_binary(&content)?.into_owned())
 }
 

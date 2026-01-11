@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 
 use crate::binary::types::{APPINFO_MAGIC_28, APPINFO_MAGIC_29, BinaryType};
-use crate::error::{Error, Result};
+use crate::error::{with_offset, Error, Result};
 use crate::value::{Obj, Value, Vdf};
 
 // ===== Appinfo Header Constants =====
@@ -52,7 +52,12 @@ fn read_u64_le(input: &[u8]) -> Option<u64> {
 fn ensure_read_u32_le(input: &[u8]) -> Result<(&[u8], u32)> {
     read_u32_le(input)
         .map(|value| (&input[4..], value))
-        .ok_or(Error::UnexpectedEndOfInput)
+        .ok_or(Error::UnexpectedEndOfInput {
+            context: "reading u32",
+            offset: 0,
+            expected: 4,
+            actual: input.len(),
+        })
 }
 
 /// Parse configuration for binary VDF formats.
@@ -183,35 +188,66 @@ pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'_>> {
 /// App entry header is `APPINFO_ENTRY_HEADER_SIZE` (68) bytes.
 pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
     if input.len() < 16 {
-        return Err(Error::UnexpectedEndOfInput);
+        return Err(Error::UnexpectedEndOfInput {
+            context: "reading appinfo header",
+            offset: input.len(),
+            expected: 16,
+            actual: input.len(),
+        });
     }
 
     let Some(magic) = read_u32_le(input) else {
-        return Err(Error::UnexpectedEndOfInput);
+        return Err(Error::UnexpectedEndOfInput {
+            context: "reading magic number",
+            offset: 0,
+            expected: 4,
+            actual: input.len(),
+        });
     };
     let Some(universe) = read_u32_le(&input[4..]) else {
-        return Err(Error::UnexpectedEndOfInput);
+        return Err(Error::UnexpectedEndOfInput {
+            context: "reading universe",
+            offset: 4,
+            expected: 4,
+            actual: input.len() - 4,
+        });
     };
 
     let (string_table_offset, mut rest) = match magic {
         APPINFO_MAGIC_28 => (None, &input[8..]),
         APPINFO_MAGIC_29 => {
             let Some(offset) = read_u64_le(&input[8..]) else {
-                return Err(Error::UnexpectedEndOfInput);
+                return Err(Error::UnexpectedEndOfInput {
+                    context: "reading string table offset",
+                    offset: 8,
+                    expected: 8,
+                    actual: input.len() - 8,
+                });
             };
             (Some(offset as usize), &input[16..])
         }
         _ => {
-            return Err(Error::InvalidMagic { found: magic });
+            return Err(Error::InvalidMagic {
+                found: magic,
+                expected: &[APPINFO_MAGIC_28, APPINFO_MAGIC_29],
+            });
         }
     };
 
     // Parse the string table if present
     let string_table = if let Some(offset) = string_table_offset {
         if offset >= input.len() {
-            return Err(Error::UnexpectedEndOfInput);
+            return Err(Error::UnexpectedEndOfInput {
+                context: "reading string table",
+                offset,
+                expected: 4,
+                actual: input.len() - offset,
+            });
         }
-        Some(parse_string_table(&input[offset..])?)
+        Some(
+            parse_string_table(&input[offset..])
+                .map_err(with_offset(offset))?,
+        )
     } else {
         None
     };
@@ -239,12 +275,22 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
 
         // Not enough data for an app entry header.
         if rest.len() < APPINFO_ENTRY_HEADER_SIZE {
-            return Err(Error::UnexpectedEndOfInput);
+            return Err(Error::UnexpectedEndOfInput {
+                context: "reading app entry header",
+                offset: current_offset,
+                expected: APPINFO_ENTRY_HEADER_SIZE,
+                actual: rest.len(),
+            });
         }
 
         // App ID (offset 0)
         let Some(app_id) = read_u32_le(rest) else {
-            return Err(Error::UnexpectedEndOfInput);
+            return Err(Error::UnexpectedEndOfInput {
+                context: "reading app id",
+                offset: current_offset,
+                expected: 4,
+                actual: rest.len(),
+            });
         };
         if app_id == 0 {
             break;
@@ -252,7 +298,12 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
 
         // Size (offset 4) - includes everything AFTER this field (APPINFO_HEADER_AFTER_SIZE bytes + VDF data)
         let Some(size) = read_u32_le(&rest[4..]) else {
-            return Err(Error::UnexpectedEndOfInput);
+            return Err(Error::UnexpectedEndOfInput {
+                context: "reading entry size",
+                offset: current_offset + 4,
+                expected: 4,
+                actual: rest.len() - 4,
+            });
         };
         let size = size as usize;
 
@@ -261,12 +312,19 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
         let vdf_end = APPINFO_VDF_DATA_OFFSET + vdf_size;
 
         if vdf_end > rest.len() {
-            return Err(Error::UnexpectedEndOfInput);
+            return Err(Error::UnexpectedEndOfInput {
+                context: "reading VDF data",
+                offset: current_offset + vdf_end,
+                expected: vdf_end,
+                actual: rest.len(),
+            });
         }
 
         let vdf_data = &rest[APPINFO_VDF_DATA_OFFSET..vdf_end];
+        let vdf_offset = current_offset + APPINFO_VDF_DATA_OFFSET;
 
-        let (_vdf_rest, app_obj) = parse_object(vdf_data, &config)?;
+        let (_vdf_rest, app_obj) = parse_object(vdf_data, &config)
+            .map_err(with_offset(vdf_offset))?;
 
         // Insert with app ID as key
         obj.insert(Cow::Owned(app_id.to_string()), Value::Obj(app_obj));
@@ -299,6 +357,7 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
             [type_byte, remainder @ ..] => {
                 let type_byte = *type_byte;
                 let typ = BinaryType::from_byte(type_byte);
+                let offset = input.len() - remainder.len();
                 rest = remainder;
 
                 match typ {
@@ -308,7 +367,11 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                     }
                     Some(BinaryType::None) => {
                         // Map entry: 0x00 [key] { ... entries ... }
-                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
+                        let key_offset = input.len() - rest.len();
+                        let (new_rest, key) = config
+                            .key_mode
+                            .parse_key(rest)
+                            .map_err(with_offset(key_offset))?;
                         let (new_rest, nested_obj) = parse_object(new_rest, config)?;
                         obj.insert(key, Value::Obj(nested_obj));
                         rest = new_rest;
@@ -316,44 +379,86 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                     Some(BinaryType::String) => {
                         // String entry: 0x01 [key] [value]
                         // VALUE is ALWAYS inline null-terminated string (never from string table!)
-                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
-                        let (new_rest, value) = parse_null_terminated_string_borrowed(new_rest)?;
+                        let key_offset = input.len() - rest.len();
+                        let (new_rest, key) = config
+                            .key_mode
+                            .parse_key(rest)
+                            .map_err(with_offset(key_offset))?;
+                        let value_offset = input.len() - new_rest.len();
+                        let (new_rest, value) = parse_null_terminated_string_borrowed(new_rest)
+                            .map_err(with_offset(value_offset))?;
                         obj.insert(key, Value::Str(Cow::Borrowed(value)));
                         rest = new_rest;
                     }
                     Some(BinaryType::Int32) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
-                        let (new_rest, value) = parse_value_int32(new_rest)?;
+                        let key_offset = input.len() - rest.len();
+                        let (new_rest, key) = config
+                            .key_mode
+                            .parse_key(rest)
+                            .map_err(with_offset(key_offset))?;
+                        let value_offset = input.len() - new_rest.len();
+                        let (new_rest, value) =
+                            parse_value_int32(new_rest).map_err(with_offset(value_offset))?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
                     Some(BinaryType::UInt64) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
-                        let (new_rest, value) = parse_value_uint64(new_rest)?;
+                        let key_offset = input.len() - rest.len();
+                        let (new_rest, key) = config
+                            .key_mode
+                            .parse_key(rest)
+                            .map_err(with_offset(key_offset))?;
+                        let value_offset = input.len() - new_rest.len();
+                        let (new_rest, value) =
+                            parse_value_uint64(new_rest).map_err(with_offset(value_offset))?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
                     Some(BinaryType::Float) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
-                        let (new_rest, value) = parse_value_float(new_rest)?;
+                        let key_offset = input.len() - rest.len();
+                        let (new_rest, key) = config
+                            .key_mode
+                            .parse_key(rest)
+                            .map_err(with_offset(key_offset))?;
+                        let value_offset = input.len() - new_rest.len();
+                        let (new_rest, value) =
+                            parse_value_float(new_rest).map_err(with_offset(value_offset))?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
                     Some(BinaryType::Ptr) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
-                        let (new_rest, value) = parse_value_ptr(new_rest)?;
+                        let key_offset = input.len() - rest.len();
+                        let (new_rest, key) = config
+                            .key_mode
+                            .parse_key(rest)
+                            .map_err(with_offset(key_offset))?;
+                        let value_offset = input.len() - new_rest.len();
+                        let (new_rest, value) =
+                            parse_value_ptr(new_rest).map_err(with_offset(value_offset))?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
                     Some(BinaryType::WString) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
-                        let (new_rest, value) = parse_value_wstring(new_rest)?;
+                        let key_offset = input.len() - rest.len();
+                        let (new_rest, key) = config
+                            .key_mode
+                            .parse_key(rest)
+                            .map_err(with_offset(key_offset))?;
+                        let value_offset = input.len() - new_rest.len();
+                        let (new_rest, value) =
+                            parse_value_wstring(new_rest).map_err(with_offset(value_offset))?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
                     Some(BinaryType::Color) => {
-                        let (new_rest, key) = config.key_mode.parse_key(rest)?;
-                        let (new_rest, value) = parse_value_color(new_rest)?;
+                        let key_offset = input.len() - rest.len();
+                        let (new_rest, key) = config
+                            .key_mode
+                            .parse_key(rest)
+                            .map_err(with_offset(key_offset))?;
+                        let value_offset = input.len() - new_rest.len();
+                        let (new_rest, value) =
+                            parse_value_color(new_rest).map_err(with_offset(value_offset))?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
@@ -361,7 +466,7 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                         // Unknown type byte
                         return Err(Error::UnknownType {
                             type_byte,
-                            offset: input.len() - rest.len(),
+                            offset,
                         });
                     }
                 }
@@ -374,24 +479,54 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
 
 /// Parse an Int32 value (4 bytes, little-endian).
 fn parse_value_int32<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
-    let arr = <[u8; 4]>::try_from(input.get(..4).ok_or(Error::UnexpectedEndOfInput)?)
-        .map_err(|_| Error::UnexpectedEndOfInput)?;
+    let arr = <[u8; 4]>::try_from(input.get(..4).ok_or(Error::UnexpectedEndOfInput {
+        context: "reading int32",
+        offset: 0,
+        expected: 4,
+        actual: input.len(),
+    })?)
+    .map_err(|_| Error::UnexpectedEndOfInput {
+        context: "reading int32",
+        offset: 0,
+        expected: 4,
+        actual: input.len(),
+    })?;
     let value = i32::from_le_bytes(arr);
     Ok((&input[4..], Value::I32(value)))
 }
 
 /// Parse a UInt64 value (8 bytes, little-endian).
 fn parse_value_uint64<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
-    let arr = <[u8; 8]>::try_from(input.get(..8).ok_or(Error::UnexpectedEndOfInput)?)
-        .map_err(|_| Error::UnexpectedEndOfInput)?;
+    let arr = <[u8; 8]>::try_from(input.get(..8).ok_or(Error::UnexpectedEndOfInput {
+        context: "reading uint64",
+        offset: 0,
+        expected: 8,
+        actual: input.len(),
+    })?)
+    .map_err(|_| Error::UnexpectedEndOfInput {
+        context: "reading uint64",
+        offset: 0,
+        expected: 8,
+        actual: input.len(),
+    })?;
     let value = u64::from_le_bytes(arr);
     Ok((&input[8..], Value::U64(value)))
 }
 
 /// Parse a Float value (4 bytes, little-endian).
 fn parse_value_float<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
-    let arr = <[u8; 4]>::try_from(input.get(..4).ok_or(Error::UnexpectedEndOfInput)?)
-        .map_err(|_| Error::UnexpectedEndOfInput)?;
+    let arr = <[u8; 4]>::try_from(input.get(..4).ok_or(Error::UnexpectedEndOfInput {
+        context: "reading float",
+        offset: 0,
+        expected: 4,
+        actual: input.len(),
+    })?)
+    .map_err(|_| Error::UnexpectedEndOfInput {
+        context: "reading float",
+        offset: 0,
+        expected: 4,
+        actual: input.len(),
+    })?;
     let value = f32::from_le_bytes(arr);
     Ok((&input[4..], Value::Float(value)))
 }
@@ -410,8 +545,18 @@ fn parse_value_wstring<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
 
 /// Parse a Color value (4 bytes RGBA).
 fn parse_value_color<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
-    let arr = <[u8; 4]>::try_from(input.get(..4).ok_or(Error::UnexpectedEndOfInput)?)
-        .map_err(|_| Error::UnexpectedEndOfInput)?;
+    let arr = <[u8; 4]>::try_from(input.get(..4).ok_or(Error::UnexpectedEndOfInput {
+        context: "reading color",
+        offset: 0,
+        expected: 4,
+        actual: input.len(),
+    })?)
+    .map_err(|_| Error::UnexpectedEndOfInput {
+        context: "reading color",
+        offset: 0,
+        expected: 4,
+        actual: input.len(),
+    })?;
     Ok((&input[4..], Value::Color(arr)))
 }
 
@@ -424,10 +569,17 @@ fn parse_null_terminated_string_borrowed(input: &[u8]) -> Result<(&[u8], &str)> 
     let null_pos = input
         .iter()
         .position(|&b| b == 0)
-        .ok_or(Error::UnexpectedEndOfInput)?;
+        .ok_or(Error::UnexpectedEndOfInput {
+            context: "reading null-terminated string",
+            offset: 0,
+            expected: 1,
+            actual: input.len(),
+        })?;
 
     let bytes = &input[..null_pos];
-    let string = std::str::from_utf8(bytes).map_err(|_| Error::InvalidUtf8 { offset: 0 })?;
+    let string = std::str::from_utf8(bytes).map_err(|e| Error::InvalidUtf8 {
+        offset: e.valid_up_to(),
+    })?;
 
     Ok((&input[null_pos + 1..], string))
 }
@@ -447,7 +599,12 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
     }
 
     if i + 1 >= input.len() {
-        return Err(Error::UnexpectedEndOfInput);
+        return Err(Error::UnexpectedEndOfInput {
+            context: "reading null-terminated wide string",
+            offset: i,
+            expected: 2,
+            actual: input.len().saturating_sub(i),
+        });
     }
 
     // Convert UTF-16LE to u16 code units
@@ -457,8 +614,14 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
 
     // Decode UTF-16 to char and then to String
     let string: String = std::char::decode_utf16(utf16_units)
-        .collect::<std::result::Result<_, _>>()
-        .map_err(|_| Error::InvalidUtf8 { offset: 0 })?;
+        .enumerate()
+        .map(|(pos, r)| {
+            r.map_err(|_| Error::InvalidUtf16 {
+                offset: pos * 2,
+                position: pos,
+            })
+        })
+        .collect::<std::result::Result<_, _>>()?;
 
     Ok((&input[i + 2..], string))
 }
@@ -471,16 +634,20 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
 /// - 4 bytes: string_count (little-endian u32)
 /// - Then string_count null-terminated UTF-8 strings
 fn parse_string_table(input: &[u8]) -> Result<StringTable<'_>> {
-    let (rest, string_count) = ensure_read_u32_le(input)?;
+    let (mut rest, string_count) = ensure_read_u32_le(input)?;
     let string_count = string_count as usize;
 
     let mut strings = Vec::with_capacity(string_count);
-    let mut rest = rest;
 
     // Extract each null-terminated string
     for _ in 0..string_count {
         if rest.is_empty() {
-            return Err(Error::UnexpectedEndOfInput);
+            return Err(Error::UnexpectedEndOfInput {
+                context: "reading string table entry",
+                offset: input.len() - rest.len(),
+                expected: 1,
+                actual: 0,
+            });
         }
         let (new_rest, string) = parse_null_terminated_string_borrowed(rest)?;
         strings.push(string);
