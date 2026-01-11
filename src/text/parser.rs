@@ -30,11 +30,11 @@ pub fn parse(input: &str) -> Result<Vdf<'_>> {
 
     let key = token
         .parse_next(&mut input)
-        .map_err(|_| parse_error(&input, 0, "expected root key"))?;
+        .map_err(|_| parse_error(input, 0, "expected root key"))?;
 
     let obj = object
         .parse_next(&mut input)
-        .map_err(|_| parse_error(&input, 0, "expected root object"))?;
+        .map_err(|_| parse_error(input, 0, "expected root object"))?;
 
     Ok(Vdf {
         key: Cow::Borrowed(key),
@@ -56,7 +56,7 @@ fn quoted_string_cow<'i>(input: &mut &'i str) -> ModalResult<Cow<'i, str>> {
 
     // Check if there are any escape sequences
     let content_end = input
-        .find(|c: char| c == '\\' || c == '"')
+        .find(['\\', '"'])
         .unwrap_or(input.len());
 
     if content_end < input.len() && input[content_end..].starts_with('\\') {
@@ -203,12 +203,12 @@ fn kv_pair<'i>(input: &mut &'i str) -> ModalResult<(&'i str, Value<'i>)> {
 }
 
 /// Skip whitespace and line comments.
-fn whitespace<'i>(input: &mut &'i str) -> ModalResult<()> {
+fn whitespace(input: &mut &str) -> ModalResult<()> {
     repeat(0.., alt((multispace1.void(), line_comment.void()))).parse_next(input)
 }
 
 /// Parse a line comment (// to newline).
-fn line_comment<'i>(input: &mut &'i str) -> ModalResult<()> {
+fn line_comment(input: &mut &str) -> ModalResult<()> {
     preceded(
         "//",
         alt((line_ending.void(), take_till(0.., ['\r', '\n']).void())),

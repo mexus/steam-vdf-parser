@@ -162,12 +162,11 @@ impl<'a> KeyMode<'a, '_> {
 /// but actual parsed values (including string table entries) are borrowed.
 pub fn parse(input: &[u8]) -> Result<Vdf<'_>> {
     // Check if this looks like appinfo format (starts with magic)
-    if let Some(magic) = read_u32_le(input) {
-        if magic == APPINFO_MAGIC_28 || magic == APPINFO_MAGIC_29 {
+    if let Some(magic) = read_u32_le(input)
+        && (magic == APPINFO_MAGIC_28 || magic == APPINFO_MAGIC_29) {
             // parse_appinfo returns Vdf<'static>, which is compatible with Vdf<'_>
             return parse_appinfo(input);
         }
-    }
 
     // Otherwise, parse as shortcuts format (zero-copy)
     parse_shortcuts(input)
