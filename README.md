@@ -1,113 +1,217 @@
 # steam-vdf-parser
 
-A Rust parser for Steam's VDF (Valve Data Format) files.
+A blazing fast, zero-copy parser for Steam's VDF (Valve Data Format) files in Rust.
+
+Supports both text and binary formats used by Steam, including `shortcuts.vdf`, `appinfo.vdf`, and `packageinfo.vdf`.
 
 ## Features
 
-- TBD
-
-## Installation
-
-- TBD
+- **Zero-copy parsing** — text format returns borrowed strings when possible (no escape sequences)
+- **Binary format support** — parses all Steam binary VDF variants
+- **Version-aware** — handles `appinfo.vdf` v40 (null-terminated keys) and v41 (string table)
+- **`serde`-free** — simple, direct data structures with no hidden allocations
+- **No dependencies** — only `winnow` (parsing) and `hex` (packageinfo SHA1 display)
 
 ## Usage
 
-- TBD
+### Text Format
 
-## VDF Format Documentation
+```rust
+use steam_vdf_parser::parse_text;
 
-### Text VDF Format
-
-Steam's text format is a simple key-value serialization with nested objects:
-
-```
-"root_key"
+let input = r#""root"
 {
-    "key1" "value1"
-    "nested_key"
+    "key" "value"
+    "nested"
     {
         "subkey" "subvalue"
     }
+}"#;
+
+let vdf = parse_text(input)?;
+assert_eq!(vdf.key, "root");
+
+// Access nested values
+let obj = vdf.as_obj().unwrap();
+let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
+assert_eq!(value, "value");
+```
+
+### Binary Format (auto-detect)
+
+```rust
+use steam_vdf_parser::parse_binary;
+
+let data = std::fs::read("shortcuts.vdf")?;
+let vdf = parse_binary(&data)?;
+
+// For data that needs to outlive the input:
+let owned = vdf.into_owned();
+```
+
+### Specific Formats
+
+```rust
+use steam_vdf_parser::{parse_appinfo, parse_packageinfo};
+
+// appinfo.vdf (auto-detects v40/v41)
+let data = std::fs::read("appinfo.vdf")?;
+let vdf = parse_appinfo(&data)?;
+
+// packageinfo.vdf
+let data = std::fs::read("packageinfo.vdf")?;
+let vdf = parse_packageinfo(&data)?;
+```
+
+### Convenience Functions
+
+```rust
+use steam_vdf_parser::{parse_text_file, parse_binary_file};
+
+// Reads file and returns owned Vdf<'static>
+let vdf = parse_text_file("steamapps/appinfo.vdf")?;
+let vdf = parse_binary_file("steamapps/packageinfo.vdf")?;
+```
+
+## Data Structures
+
+### `Value<'text>` Enum
+
+| Variant | Rust Type | Accessor |
+|---------|-----------|----------|
+| `Str` | `Cow<'text, str>` | `as_str()` |
+| `Obj` | `Obj<'text>` | `as_obj()` |
+| `I32` | `i32` | `as_i32()` |
+| `U64` | `u64` | `as_u64()` |
+| `Float` | `f32` | `as_float()` |
+| `Pointer` | `u32` | `as_pointer()` |
+| `Color` | `[u8; 4]` | `as_color()` |
+
+### `Obj<'text>`
+
+A `HashMap`-backed object with O(1) lookup:
+
+```rust
+let obj = vdf.as_obj().unwrap();
+let len = obj.len();
+let is_empty = obj.is_empty();
+let value = obj.get("key");  // Option<&Value>
+
+// Iterate
+for (key, value) in obj.iter() {
+    println!("{}: {}", key, value);
 }
 ```
 
-**Grammar rules:**
-- Tokens can be quoted (`"key"`) or unquoted (`key`)
-- Objects are delimited by `{` and `}`
-- String values are quoted
-- Comments start with `//` and extend to end of line
-- Whitespace (including newlines) is generally ignored
+### Lifetime and Ownership
 
-### Binary VDF Format (shortcuts.vdf)
+Parsing functions return `Vdf<'_>` with strings borrowed from input where possible. Use `.into_owned()` to convert to `Vdf<'static>`:
 
-Simple binary format used by Steam for shortcuts and other data.
+```rust
+let borrowed: Vdf<'_> = parse_text(input)?;
+let owned: Vdf<'static> = borrowed.into_owned();
+```
 
-| Type Byte | Name | Description |
-|-----------|------|-------------|
-| 0x00 | None/Object | Start of an object (followed by null-terminated key name) |
-| 0x01 | String | Null-terminated UTF-8 string value |
-| 0x02 | Int32 | 4-byte little-endian integer |
-| 0x03 | Float | 4-byte little-endian float |
-| 0x04 | Pointer | 4-byte pointer value |
-| 0x05 | WString | Null-terminated UTF-16LE string (terminated by `0x00 0x00`) |
-| 0x06 | Color | 4 bytes RGBA |
-| 0x07 | UInt64 | 8-byte little-endian unsigned integer |
-| 0x08 | ObjectEnd | End of current object |
+## Binary Format Reference
 
-**Entry format:** `[TypeByte] [NullTerminatedKey] [Value...]`
+### Type Bytes
 
-### Binary VDF Format (appinfo.vdf)
+All binary VDF formats use type byte prefixes:
 
-Complex format with versioned structure for caching Steam application metadata.
+| Byte | Name | Description |
+|------|------|-------------|
+| `0x00` | None/Object | Start of an object (followed by key) |
+| `0x01` | String | Null-terminated UTF-8 string value |
+| `0x02` | Int32 | 4-byte little-endian signed integer |
+| `0x03` | Float | 4-byte little-endian IEEE-754 float |
+| `0x04` | Pointer | 4-byte pointer value (stored as `u32`) |
+| `0x05` | WString | Null-terminated UTF-16LE string (`0x00 0x00` terminator) |
+| `0x06` | Color | 4 bytes RGBA |
+| `0x07` | UInt64 | 8-byte little-endian unsigned integer |
+| `0x08` | ObjectEnd | End of current object |
+
+### Entry Format
+
+`[TypeByte] [Key] [Value...]`
+
+- **Key encoding** varies by format (null-terminated or string table index)
+- **String values** are always inline null-terminated UTF-8 (never from string table)
+
+### shortcuts.vdf
+
+Simple binary format. Keys are null-terminated UTF-8 strings. Ends at EOF.
+
+### appinfo.vdf
 
 #### File Header
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
-| 0x00 | 4 | Magic | `0x07564427` (v39), `0x07564428` (v40), or `0x07564429` (v41) |
-| 0x04 | 4 | Universe | Always 1 (public) |
-| 0x08 | 8 | String Table Offset | Present only in v41 |
+| `0x00` | 4 | Magic | `0x07564428` (v40) or `0x07564429` (v41) |
+| `0x04` | 4 | Universe | Always `1` (public) |
+| `0x08` | 8 | String Table Offset | Present only in v41 |
+
+#### App Entry Header (68 bytes)
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| `0x00` | 4 | App ID | Steam application ID |
+| `0x04` | 4 | Size | Size of remaining data (60 bytes + VDF payload) |
+| `0x08` | 4 | Info State | Flags (e.g., `2` = available) |
+| `0x0C` | 4 | Last Updated | Unix timestamp |
+| `0x10` | 8 | PICS Token | Access token for PICS API |
+| `0x18` | 20 | SHA1 | Hash of VDF payload |
+| `0x2C` | 4 | Change Number | Sequence number |
+| `0x30` | 20 | Binary SHA1 | Hash of binary VDF data |
+
+VDF data starts at offset `0x44` (68 bytes). Length = `Size - 60`.
+
+#### Key Encoding
+
+- **v40**: Keys are null-terminated UTF-8 strings
+- **v41**: Keys are `u32` indices into the string table
+- **All versions**: String *values* are always inline null-terminated UTF-8
 
 #### String Table (v41 only)
 
-Located at the `String Table Offset`:
+Located at `String Table Offset`:
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
-| 0x00 | 4 | String Count | Number of strings (little-endian) |
-| 0x04 | - | Strings | `String Count` null-terminated UTF-8 strings |
+| `0x00` | 4 | String Count | Number of strings (little-endian) |
+| `0x04` | - | Strings | Null-terminated UTF-8 strings |
 
-In v41, object **keys** are stored as uint32 indices into the string table. String **values** are always inline null-terminated strings.
+### packageinfo.vdf
 
-#### App Entry Header
-
-Each app entry has a 68-byte header:
+#### File Header
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
-| 0x00 | 4 | App ID | Steam application ID |
-| 0x04 | 4 | Size | Size of everything **after** this field (60 bytes + VDF data) |
-| 0x08 | 4 | Info State | Flags (e.g., 2 = available) |
-| 0x0C | 4 | Last Updated | Unix timestamp |
-| 0x10 | 8 | PICS Token | Access token for PICS API |
-| 0x18 | 20 | SHA1 | Hash of VDF payload |
-| 0x2C | 4 | Change Number | Sequence number |
-| 0x30 | 20 | Binary SHA1 | Hash of binary VDF data (v40/v41 only) |
+| `0x00` | 4 | Magic | Upper 3 bytes: `0x065655`, lower byte: version (`27` = v39, `28` = v40) |
+| `0x04` | 4 | Universe | Always `1` (public) |
 
-After the 68-byte header, the VDF data begins. The VDF data length is `Size - 60`.
+#### Package Entry Header
 
-#### VDF Data Structure (appinfo)
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| `0x00` | 4 | Package ID | `0xFFFFFFFF` marks end of file |
+| `0x04` | 20 | SHA-1 | Hash of VDF payload |
+| `0x18` | 4 | Change Number | Sequence number |
+| `0x1C` | 8 | PICS Token | Present only in v40 |
 
-The binary VDF data uses the same type bytes as shortcuts.vdf, with key encoding differences:
+Followed by binary VDF blob (null-terminated keys, like shortcuts.vdf).
 
-- **v39/v40**: Keys are null-terminated UTF-8 strings
-- **v41**: Keys are uint32 indices into the string table (little-endian)
-- **All versions**: String **values** are always null-terminated UTF-8 strings (inline, not from string table)
+## Performance
 
-## Testing
+Text parsing is zero-copy when strings contain no escape sequences — `Cow::Borrowed` refers directly into the input. Escape sequences and wide strings (UTF-16) cause allocation (`Cow::Owned`).
 
-- TBD
+Binary parsing is also zero-copy for string values. In appinfo v41, root keys (app IDs) are owned due to integer-to-string conversion, but nested values remain borrowed from the string table or input buffer.
 
 ## License
 
-- TBD
+Licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
