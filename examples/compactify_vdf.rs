@@ -9,27 +9,12 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use steam_vdf_parser::binary::APPINFO_MAGIC_40;
-use steam_vdf_parser::binary::APPINFO_MAGIC_41;
+use steam_vdf_parser::binary::{
+    APPINFO_MAGIC_40, APPINFO_MAGIC_41, read_u32_le_at, read_u64_le_at,
+};
 
 // App entry header size
 const APPINFO_ENTRY_HEADER_SIZE: usize = 68;
-
-/// Read a little-endian u32 from a byte slice.
-fn read_u32_le(input: &[u8], offset: usize) -> Option<u32> {
-    input.get(offset..offset + 4).and_then(|bytes| {
-        let arr: [u8; 4] = bytes.try_into().ok()?;
-        Some(u32::from_le_bytes(arr))
-    })
-}
-
-/// Read a little-endian u64 from a byte slice.
-fn read_u64_le(input: &[u8], offset: usize) -> Option<u64> {
-    input.get(offset..offset + 8).and_then(|bytes| {
-        let arr: [u8; 8] = bytes.try_into().ok()?;
-        Some(u64::from_le_bytes(arr))
-    })
-}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -79,7 +64,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let magic = match read_u32_le(&data, 0) {
+    let magic = match read_u32_le_at(&data, 0) {
         Some(m) => m,
         None => {
             eprintln!("Error: cannot read magic number");
@@ -87,7 +72,7 @@ fn main() {
         }
     };
 
-    let universe = match read_u32_le(&data, 4) {
+    let universe = match read_u32_le_at(&data, 4) {
         Some(u) => u,
         None => {
             eprintln!("Error: cannot read universe");
@@ -98,7 +83,7 @@ fn main() {
     let (is_v41, string_table_offset) = match magic {
         APPINFO_MAGIC_40 => (false, None),
         APPINFO_MAGIC_41 => {
-            let offset = read_u64_le(&data, 8);
+            let offset = read_u64_le_at(&data, 8);
             (true, offset.map(|o| o as usize))
         }
         _ => {
@@ -148,7 +133,7 @@ fn main() {
         }
 
         // Read app ID
-        let app_id = match read_u32_le(&data, current_offset) {
+        let app_id = match read_u32_le_at(&data, current_offset) {
             Some(id) => id,
             None => {
                 eprintln!("Error: cannot read app_id at offset {}", current_offset);
@@ -166,7 +151,7 @@ fn main() {
         }
 
         // Read size field (at offset 4)
-        let entry_size = match read_u32_le(&data, current_offset + 4) {
+        let entry_size = match read_u32_le_at(&data, current_offset + 4) {
             Some(s) => s as usize,
             None => {
                 eprintln!("Error: cannot read size at offset {}", current_offset + 4);

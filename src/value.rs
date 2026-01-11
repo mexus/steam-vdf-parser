@@ -143,7 +143,7 @@ pub struct Obj<'text> {
 }
 
 impl<'text> Obj<'text> {
-    /// Creates a new empty object.
+    /// Creates a new empty VDF object.
     pub fn new() -> Self {
         Self {
             inner: HashMap::new(),
@@ -226,5 +226,291 @@ impl<'text> Vdf<'text> {
 impl<'text> fmt::Display for Vdf<'text> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.key, self.value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    #[test]
+    fn test_value_is_methods() {
+        let v = Value::I32(42);
+        assert!(v.is_i32());
+        assert!(!v.is_str());
+        assert!(!v.is_obj());
+    }
+
+    #[test]
+    fn test_value_is_str() {
+        let v = Value::Str(Cow::Borrowed("test"));
+        assert!(v.is_str());
+        assert!(!v.is_i32());
+    }
+
+    #[test]
+    fn test_value_is_obj() {
+        let v = Value::Obj(Obj::new());
+        assert!(v.is_obj());
+        assert!(!v.is_str());
+    }
+
+    #[test]
+    fn test_value_is_float() {
+        let v = Value::Float(1.0);
+        assert!(v.is_float());
+        assert!(!v.is_i32());
+    }
+
+    #[test]
+    fn test_value_is_u64() {
+        let v = Value::U64(100);
+        assert!(v.is_u64());
+        assert!(!v.is_i32());
+    }
+
+    #[test]
+    fn test_value_is_pointer() {
+        let v = Value::Pointer(0x12345678);
+        assert!(v.is_pointer());
+        assert!(!v.is_i32());
+    }
+
+    #[test]
+    fn test_value_is_color() {
+        let v = Value::Color([255, 0, 0, 255]);
+        assert!(v.is_color());
+        assert!(!v.is_i32());
+    }
+
+    #[test]
+    fn test_value_as_methods() {
+        let v = Value::I32(42);
+        assert_eq!(v.as_i32(), Some(42));
+        assert_eq!(v.as_str(), None);
+        assert_eq!(v.as_obj(), None);
+    }
+
+    #[test]
+    fn test_value_as_str() {
+        let v = Value::Str(Cow::Borrowed("test"));
+        assert_eq!(v.as_str(), Some(&Cow::Borrowed("test")));
+    }
+
+    #[test]
+    fn test_value_as_obj() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("key"), Value::I32(42));
+        let v = Value::Obj(obj);
+        assert!(v.as_obj().is_some());
+    }
+
+    #[test]
+    fn test_value_as_float() {
+        let v = Value::Float(1.5);
+        assert_eq!(v.as_float(), Some(1.5));
+    }
+
+    #[test]
+    fn test_value_as_u64() {
+        let v = Value::U64(123456789);
+        assert_eq!(v.as_u64(), Some(123456789));
+    }
+
+    #[test]
+    fn test_value_as_pointer() {
+        let v = Value::Pointer(0xABCDEF01);
+        assert_eq!(v.as_pointer(), Some(0xABCDEF01));
+    }
+
+    #[test]
+    fn test_value_as_color() {
+        let v = Value::Color([255, 128, 64, 32]);
+        assert_eq!(v.as_color(), Some([255, 128, 64, 32]));
+    }
+
+    #[test]
+    fn test_value_display_i32() {
+        assert_eq!(format!("{}", Value::I32(42)), "42");
+        assert_eq!(format!("{}", Value::I32(-42)), "-42");
+    }
+
+    #[test]
+    fn test_value_display_u64() {
+        assert_eq!(format!("{}", Value::U64(100)), "100");
+    }
+
+    #[test]
+    fn test_value_display_str() {
+        assert_eq!(format!("{}", Value::Str(Cow::Borrowed("test"))), "test");
+    }
+
+    #[test]
+    fn test_value_display_obj() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("key"), Value::I32(42));
+        let v = Value::Obj(obj);
+        assert!(format!("{}", v).contains("key"));
+        assert!(format!("{}", v).contains("42"));
+    }
+
+    #[test]
+    fn test_value_display_float() {
+        let v = Value::Float(1.5);
+        assert_eq!(format!("{}", v), "1.5");
+    }
+
+    #[test]
+    fn test_value_display_pointer() {
+        assert_eq!(format!("{}", Value::Pointer(0x12345678)), "0x12345678");
+    }
+
+    #[test]
+    fn test_value_display_color() {
+        assert_eq!(format!("{}", Value::Color([255, 0, 0, 255])), "25500255");
+    }
+
+    #[test]
+    fn test_obj_new_is_empty() {
+        let obj = Obj::new();
+        assert!(obj.is_empty());
+        assert_eq!(obj.len(), 0);
+    }
+
+    #[test]
+    fn test_obj_get() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("key"), Value::I32(42));
+        assert_eq!(obj.get("key").and_then(|v| v.as_i32()), Some(42));
+        assert_eq!(obj.get("missing"), None);
+    }
+
+    #[test]
+    fn test_obj_len() {
+        let mut obj = Obj::new();
+        assert_eq!(obj.len(), 0);
+        obj.insert(Cow::Borrowed("key1"), Value::I32(1));
+        assert_eq!(obj.len(), 1);
+        obj.insert(Cow::Borrowed("key2"), Value::I32(2));
+        assert_eq!(obj.len(), 2);
+    }
+
+    #[test]
+    fn test_obj_iter() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("key1"), Value::I32(1));
+        obj.insert(Cow::Borrowed("key2"), Value::I32(2));
+        let mut iter = obj.iter();
+        assert!(iter.next().is_some());
+        assert!(iter.next().is_some());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_obj_default() {
+        let obj = Obj::default();
+        assert!(obj.is_empty());
+    }
+
+    #[test]
+    fn test_vdf_new() {
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(Obj::new()));
+        assert_eq!(vdf.key, "root");
+        assert!(vdf.is_obj());
+    }
+
+    #[test]
+    fn test_vdf_is_obj() {
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(Obj::new()));
+        assert!(vdf.is_obj());
+        let vdf2 = Vdf::new(Cow::Borrowed("root"), Value::I32(42));
+        assert!(!vdf2.is_obj());
+    }
+
+    #[test]
+    fn test_vdf_as_obj() {
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(Obj::new()));
+        assert!(vdf.as_obj().is_some());
+        let vdf2 = Vdf::new(Cow::Borrowed("root"), Value::I32(42));
+        assert!(vdf2.as_obj().is_none());
+    }
+
+    #[test]
+    fn test_vdf_display() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("key"), Value::I32(42));
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(obj));
+        let s = format!("{}", vdf);
+        assert!(s.contains("root"));
+    }
+
+    #[test]
+    fn test_into_owned_value_str() {
+        let value = Value::Str(Cow::Borrowed("test"));
+        let owned = value.into_owned();
+        assert_eq!(owned, Value::Str(Cow::Owned("test".to_string())));
+    }
+
+    #[test]
+    fn test_into_owned_value_str_already_owned() {
+        let value = Value::Str(Cow::Owned("test".to_string()));
+        let owned = value.into_owned();
+        assert_eq!(owned, Value::Str(Cow::Owned("test".to_string())));
+    }
+
+    #[test]
+    fn test_into_owned_value_obj() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("key"), Value::I32(42));
+        let value = Value::Obj(obj);
+        let owned = value.into_owned();
+        assert!(owned.is_obj());
+    }
+
+    #[test]
+    fn test_into_owned_value_numeric() {
+        assert_eq!(Value::I32(42).into_owned(), Value::I32(42));
+        assert_eq!(Value::U64(100).into_owned(), Value::U64(100));
+        assert_eq!(Value::Float(1.5).into_owned(), Value::Float(1.5));
+        assert_eq!(Value::Pointer(123).into_owned(), Value::Pointer(123));
+        assert_eq!(
+            Value::Color([1, 2, 3, 4]).into_owned(),
+            Value::Color([1, 2, 3, 4])
+        );
+    }
+
+    #[test]
+    fn test_into_owned_obj() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("key"), Value::I32(42));
+        let owned = obj.into_owned();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned.get("key").and_then(|v| v.as_i32()), Some(42));
+    }
+
+    #[test]
+    fn test_into_owned_obj_nested() {
+        let mut inner = Obj::new();
+        inner.insert(
+            Cow::Borrowed("inner_key"),
+            Value::Str(Cow::Borrowed("value")),
+        );
+        let mut outer = Obj::new();
+        outer.insert(Cow::Borrowed("outer_key"), Value::Obj(inner));
+        let owned = outer.into_owned();
+        let inner_obj = owned.get("outer_key").and_then(|v| v.as_obj()).unwrap();
+        assert_eq!(
+            inner_obj.get("inner_key").and_then(|v| v.as_str()),
+            Some(&Cow::Owned("value".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_into_owned_vdf() {
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::I32(42));
+        let owned = vdf.into_owned();
+        assert_eq!(owned.key, Cow::Owned::<str>("root".to_string()));
+        assert_eq!(owned.value, Value::I32(42));
     }
 }

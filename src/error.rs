@@ -6,6 +6,13 @@ use std::fmt;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Create a parse error with truncated input snippet (max 50 chars).
+///
+/// The snippet is limited to 50 characters to keep error messages manageable.
+///
+/// # Parameters
+/// - `input`: The input string being parsed
+/// - `offset`: Byte offset where the error occurred
+/// - `context`: Description of what was expected
 pub fn parse_error(input: &str, offset: usize, context: impl Into<String>) -> Error {
     let snippet = input.chars().take(50).collect::<String>();
     Error::ParseError {
@@ -207,4 +214,228 @@ impl Error {
 /// ```
 pub fn with_offset(base: usize) -> impl Fn(Error) -> Error {
     move |err| err.with_offset(base)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binary::{APPINFO_MAGIC_40, APPINFO_MAGIC_41};
+    use std::error::Error as StdError;
+
+    #[test]
+    fn test_error_display_invalid_magic() {
+        let err = Error::InvalidMagic {
+            found: 0xDEADBEEF,
+            expected: &[APPINFO_MAGIC_40, APPINFO_MAGIC_41],
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("0xdeadbeef"));
+        assert!(msg.contains("0x07564428"));
+    }
+
+    #[test]
+    fn test_error_display_unknown_type() {
+        let err = Error::UnknownType {
+            type_byte: 0xFF,
+            offset: 42,
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("0xff"));
+        assert!(msg.contains("42"));
+    }
+
+    #[test]
+    fn test_error_display_invalid_string_index() {
+        let err = Error::InvalidStringIndex { index: 5, max: 3 };
+        let msg = format!("{}", err);
+        assert!(msg.contains("5"));
+        assert!(msg.contains("3"));
+    }
+
+    #[test]
+    fn test_error_display_invalid_string_index_empty() {
+        let err = Error::InvalidStringIndex { index: 0, max: 0 };
+        let msg = format!("{}", err);
+        assert!(msg.contains("empty"));
+    }
+
+    #[test]
+    fn test_error_display_unexpected_end_of_input() {
+        let err = Error::UnexpectedEndOfInput {
+            context: "reading string",
+            offset: 10,
+            expected: 4,
+            actual: 2,
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("reading string"));
+        assert!(msg.contains("10"));
+        assert!(msg.contains("expected 4"));
+        assert!(msg.contains("found 2"));
+    }
+
+    #[test]
+    fn test_error_display_invalid_utf8() {
+        let err = Error::InvalidUtf8 { offset: 15 };
+        let msg = format!("{}", err);
+        assert!(msg.contains("15"));
+    }
+
+    #[test]
+    fn test_error_display_invalid_utf16() {
+        let err = Error::InvalidUtf16 {
+            offset: 20,
+            position: 3,
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("20"));
+        assert!(msg.contains("3"));
+    }
+
+    #[test]
+    fn test_error_display_parse_error() {
+        let err = Error::ParseError {
+            input: "some very long input that should be truncated in the message".to_string(),
+            offset: 5,
+            context: "expected quote".to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("5"));
+        assert!(msg.contains("expected quote"));
+        // The input should be truncated to 50 chars, so the message shouldn't be too long
+        assert!(msg.len() < 150);
+    }
+
+    #[test]
+    fn test_error_with_offset_unexpected_end() {
+        let err = Error::UnexpectedEndOfInput {
+            context: "test",
+            offset: 10,
+            expected: 4,
+            actual: 2,
+        };
+        let adjusted = err.with_offset(100);
+        match adjusted {
+            Error::UnexpectedEndOfInput { offset, .. } => {
+                assert_eq!(offset, 110);
+            }
+            _ => panic!("Unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn test_error_with_offset_invalid_utf8() {
+        let err = Error::InvalidUtf8 { offset: 5 };
+        let adjusted = err.with_offset(100);
+        match adjusted {
+            Error::InvalidUtf8 { offset } => {
+                assert_eq!(offset, 105);
+            }
+            _ => panic!("Unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn test_error_with_offset_invalid_utf16() {
+        let err = Error::InvalidUtf16 {
+            offset: 10,
+            position: 2,
+        };
+        let adjusted = err.with_offset(100);
+        match adjusted {
+            Error::InvalidUtf16 { offset, position } => {
+                assert_eq!(offset, 110);
+                assert_eq!(position, 2);
+            }
+            _ => panic!("Unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn test_error_with_offset_unknown_type() {
+        let err = Error::UnknownType {
+            type_byte: 0x42,
+            offset: 7,
+        };
+        let adjusted = err.with_offset(100);
+        match adjusted {
+            Error::UnknownType { type_byte, offset } => {
+                assert_eq!(type_byte, 0x42);
+                assert_eq!(offset, 107);
+            }
+            _ => panic!("Unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn test_error_with_offset_parse_error() {
+        let err = Error::ParseError {
+            input: "test".to_string(),
+            offset: 3,
+            context: "context".to_string(),
+        };
+        let adjusted = err.with_offset(100);
+        match adjusted {
+            Error::ParseError { offset, .. } => {
+                assert_eq!(offset, 103);
+            }
+            _ => panic!("Unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn test_error_with_offset_no_change_for_non_offset_variants() {
+        let err = Error::InvalidMagic {
+            found: 0x12345678,
+            expected: &[APPINFO_MAGIC_40],
+        };
+        let adjusted = err.with_offset(100);
+        // InvalidMagic doesn't have an offset field, so it should be unchanged
+        match adjusted {
+            Error::InvalidMagic { found, .. } => {
+                assert_eq!(found, 0x12345678);
+            }
+            _ => panic!("Unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn test_error_io_error_source() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
+        let err = Error::IoError(io_err);
+        assert!(err.source().is_some());
+        assert!(err.source().unwrap().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_error_other_variants_no_source() {
+        let err = Error::InvalidUtf8 { offset: 0 };
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn test_parse_error_truncates_long_input() {
+        let long_input = "a".repeat(100);
+        let err = parse_error(&long_input, 0, "test context");
+        match err {
+            Error::ParseError { input, .. } => {
+                assert!(input.len() <= 50, "Input should be truncated to 50 chars");
+            }
+            _ => panic!("Expected ParseError variant"),
+        }
+    }
+
+    #[test]
+    fn test_with_offset_closure() {
+        let base_offset = 100;
+        let f = with_offset(base_offset);
+        let err = Error::InvalidUtf8 { offset: 5 };
+        let adjusted = f(err);
+        match adjusted {
+            Error::InvalidUtf8 { offset } => {
+                assert_eq!(offset, 105);
+            }
+            _ => panic!("Unexpected error type"),
+        }
+    }
 }

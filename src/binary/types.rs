@@ -47,9 +47,13 @@ impl BinaryType {
 }
 
 /// Magic number for appinfo.vdf format version 40.
+///
+/// This format uses null-terminated UTF-8 keys.
 pub const APPINFO_MAGIC_40: u32 = 0x07564428;
 
 /// Magic number for appinfo.vdf format version 41 (with string table).
+///
+/// This format uses u32 indices into a string table for keys, enabling O(1) lookups.
 pub const APPINFO_MAGIC_41: u32 = 0x07564429;
 
 /// Magic base for packageinfo.vdf format (upper 3 bytes).
@@ -58,5 +62,5 @@ pub const PACKAGEINFO_MAGIC_BASE: u32 = 0x065655;
 /// Magic number for packageinfo.vdf format version 39.
 pub const PACKAGEINFO_MAGIC_39: u32 = 0x06565527;
 
-/// Magic number for packageinfo.vdf format version 40.
+/// Magic number for packageinfo.vdf format version 40 (with PICS token).
 pub const PACKAGEINFO_MAGIC_40: u32 = 0x06565528;

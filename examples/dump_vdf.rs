@@ -62,13 +62,15 @@ fn main() {
         } else {
             // Fall back to binary
             let data = std::fs::read(path).expect("Failed to read file");
-            if path.file_name().is_some_and(|n| {
-                n.to_str().is_some_and(|s| s.contains("packageinfo"))
-            }) {
+            if path
+                .file_name()
+                .is_some_and(|n| n.to_str().is_some_and(|s| s.contains("packageinfo")))
+            {
                 binary::parse_packageinfo(&data).map(|v| v.into_owned())
-            } else if path.file_name().is_some_and(|n| {
-                n.to_str().is_some_and(|s| s.contains("appinfo"))
-            }) {
+            } else if path
+                .file_name()
+                .is_some_and(|n| n.to_str().is_some_and(|s| s.contains("appinfo")))
+            {
                 binary::parse_appinfo(&data).map(|v| v.into_owned())
             } else {
                 parse_binary(&data).map(|v| v.into_owned())
@@ -77,13 +79,15 @@ fn main() {
     } else {
         // Binary parsing
         let data = std::fs::read(path).expect("Failed to read file");
-        if path.file_name().is_some_and(|n| {
-            n.to_str().is_some_and(|s| s.contains("packageinfo"))
-        }) {
+        if path
+            .file_name()
+            .is_some_and(|n| n.to_str().is_some_and(|s| s.contains("packageinfo")))
+        {
             binary::parse_packageinfo(&data).map(|v| v.into_owned())
-        } else if path.file_name().is_some_and(|n| {
-            n.to_str().is_some_and(|s| s.contains("appinfo"))
-        }) {
+        } else if path
+            .file_name()
+            .is_some_and(|n| n.to_str().is_some_and(|s| s.contains("appinfo")))
+        {
             binary::parse_appinfo(&data).map(|v| v.into_owned())
         } else {
             parse_binary(&data).map(|v| v.into_owned())

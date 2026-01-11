@@ -6,6 +6,7 @@
 
 use std::borrow::Cow;
 
+use crate::binary::byte_reader::{read_u32_le, read_u64_le};
 use crate::binary::types::{
     APPINFO_MAGIC_40, APPINFO_MAGIC_41, BinaryType, PACKAGEINFO_MAGIC_39, PACKAGEINFO_MAGIC_40,
     PACKAGEINFO_MAGIC_BASE,
@@ -28,28 +29,6 @@ const APPINFO_ENTRY_HEADER_SIZE: usize = APPINFO_HEADER_SIZE + APPINFO_HEADER_AF
 const APPINFO_VDF_DATA_OFFSET: usize = APPINFO_ENTRY_HEADER_SIZE;
 
 // ===== Helper Functions =====
-
-/// Read a little-endian u32 from the start of a slice.
-///
-/// Returns `None` if the slice is too small.
-#[inline]
-fn read_u32_le(input: &[u8]) -> Option<u32> {
-    input.get(..4).and_then(|bytes| {
-        let arr: [u8; 4] = bytes.try_into().ok()?;
-        Some(u32::from_le_bytes(arr))
-    })
-}
-
-/// Read a little-endian u64 from the start of a slice.
-///
-/// Returns `None` if the slice is too small.
-#[inline]
-fn read_u64_le(input: &[u8]) -> Option<u64> {
-    input.get(..8).and_then(|bytes| {
-        let arr: [u8; 8] = bytes.try_into().ok()?;
-        Some(u64::from_le_bytes(arr))
-    })
-}
 
 /// Read a little-endian u32 from the start of a slice, returning an error if too small.
 fn ensure_read_u32_le(input: &[u8]) -> Result<(&[u8], u32)> {
@@ -337,13 +316,21 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
     })
 }
 
-/// Parse an object from binary data.
+/// Parses an object from binary VDF data.
 ///
-/// Returns the remaining input and the parsed object.
+/// This function implements a state machine that:
+/// 1. Reads a type byte to determine the entry type
+/// 2. Parses a key (format depends on `config.key_mode`)
+/// 3. Parses the value based on the type byte
+/// 4. Inserts the key-value pair into the object
+/// 5. Returns on `ObjectEnd` (0x08) marker
 ///
 /// # Parameters
-/// - `input`: The binary data to parse
-/// - `config`: Parse configuration including string table and key parsing strategy
+/// - `input`: Binary data to parse
+/// - `config`: Parse configuration including string table reference
+///
+/// # Returns
+/// A tuple of remaining input and the parsed object.
 fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'a [u8], Obj<'a>)> {
     let mut obj = Obj::new();
     let mut rest = input;
@@ -991,5 +978,216 @@ mod tests {
         let root = obj.get("root").and_then(|v| v.as_obj()).unwrap();
         let value = root.get("col").and_then(|v| v.as_color());
         assert_eq!(value, Some([255, 0, 0, 255]));
+    }
+
+    // ===== Error Path Tests =====
+
+    #[test]
+    fn test_parse_unknown_type_byte() {
+        let data: &[u8] = &[
+            0x00, b't', b'e', b's', b't', 0x00, 0xFF, // Invalid type byte
+            b'k', b'e', b'y', 0x00,
+        ];
+        assert!(matches!(
+            parse_shortcuts(data),
+            Err(Error::UnknownType {
+                type_byte: 0xFF,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_parse_truncated_object_start() {
+        let data: &[u8] = &[0x00]; // Incomplete object start
+        assert!(matches!(
+            parse_shortcuts(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_truncated_string_value() {
+        let data: &[u8] = &[
+            0x00, b't', b'e', b's', b't', 0x00, 0x01, // String type
+            b'k', b'e', b'y', 0x00,
+            // Missing null terminator
+        ];
+        assert!(matches!(
+            parse_shortcuts(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_invalid_utf8_string() {
+        let data: &[u8] = &[
+            0x00, b't', b'e', b's', b't', 0x00, 0x01, // String type
+            b'k', b'e', b'y', 0x00, 0xFF, 0xFF, 0x00, // Invalid UTF-8 followed by null
+        ];
+        assert!(matches!(
+            parse_shortcuts(data),
+            Err(Error::InvalidUtf8 { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_truncated_int32_value() {
+        let data: &[u8] = &[
+            0x00, b't', b'e', b's', b't', 0x00, 0x02, // Int32 type
+            b'k', b'e', b'y', 0x00, 0x01, 0x02, // Only 2 bytes instead of 4
+        ];
+        assert!(matches!(
+            parse_shortcuts(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_truncated_uint64_value() {
+        let data: &[u8] = &[
+            0x00, b't', b'e', b's', b't', 0x00, 0x07, // UInt64 type
+            b'k', b'e', b'y', 0x00, 0x01, 0x02, 0x03, 0x04, // Only 4 bytes instead of 8
+        ];
+        assert!(matches!(
+            parse_shortcuts(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_truncated_float_value() {
+        let data: &[u8] = &[
+            0x00, b't', b'e', b's', b't', 0x00, 0x03, // Float type
+            b'k', b'e', b'y', 0x00, 0x01, 0x02, // Only 2 bytes instead of 4
+        ];
+        assert!(matches!(
+            parse_shortcuts(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_truncated_color_value() {
+        let data: &[u8] = &[
+            0x00, b't', b'e', b's', b't', 0x00, 0x06, // Color type
+            b'k', b'e', b'y', 0x00, 0xFF, 0x00, // Only 2 bytes instead of 4
+        ];
+        assert!(matches!(
+            parse_shortcuts(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_wstring_unpaired_surrogate() {
+        // WideString with unpaired surrogate - Rust's decode_utf16 replaces with
+        // replacement character rather than erroring, so this should parse successfully
+        let data: &[u8] = &[
+            0x00, b't', b'e', b's', b't', 0x00, 0x05, // WideString type
+            b'k', b'e', b'y', 0x00, 0xD8, 0x00, 0x00,
+            0x00, // Unpaired surrogate (UTF-16) - gets replaced
+        ];
+        assert!(parse_shortcuts(data).is_ok());
+    }
+
+    #[test]
+    fn test_parse_appinfo_invalid_magic() {
+        let data: &[u8] = &[
+            0xDE, 0xAD, 0xBE, 0xEF, // Invalid magic
+            0x00, 0x00, 0x00, 0x00, // universe
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // padding to meet minimum size
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert!(matches!(
+            parse_appinfo(data),
+            Err(Error::InvalidMagic { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_appinfo_truncated_header() {
+        let data: &[u8] = &[
+            0x28, 0x44, 0x56, 0x07, // APPINFO_MAGIC_41 first byte
+        ];
+        assert!(matches!(
+            parse_appinfo(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_appinfo_v41_invalid_string_table_offset() {
+        // v41 with string table offset beyond file length
+        let data: &[u8] = &[
+            0x28, 0x44, 0x56, 0x07, // APPINFO_MAGIC_41
+            0x00, 0x00, 0x00, 0x00, // universe
+            0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, // string table offset (255, beyond EOF)
+        ];
+        assert!(matches!(
+            parse_appinfo(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_packageinfo_invalid_magic() {
+        let data: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00];
+        assert!(matches!(
+            parse_packageinfo(data),
+            Err(Error::InvalidMagic { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_packageinfo_truncated_header() {
+        let data: &[u8] = &[0x27]; // Partial magic
+        assert!(matches!(
+            parse_packageinfo(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_appinfo_with_terminator() {
+        // v40 format with immediate app_id terminator (no apps)
+        // Need 68 bytes minimum (APPINFO_ENTRY_HEADER_SIZE) to pass the size check
+        let data: &[u8] = &[
+            0x28, 0x44, 0x56, 0x07, // APPINFO_MAGIC_40
+            0x00, 0x00, 0x00, 0x00, // universe
+            0x00, 0x00, 0x00, 0x00, // app_id = 0 (terminator)
+            // Padding to meet APPINFO_ENTRY_HEADER_SIZE (68 bytes total)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        let result = parse_appinfo(data);
+        if let Err(e) = &result {
+            panic!("parse_appinfo failed with: {:?}", e);
+        }
+        assert!(
+            result.is_ok(),
+            "Appinfo with terminator should parse successfully"
+        );
+        let vdf = result.unwrap();
+        let obj = vdf.as_obj().unwrap();
+        assert_eq!(obj.len(), 0, "Should have no apps");
+    }
+
+    #[test]
+    fn test_parse_autodetect_fallback_to_shortcuts() {
+        // Data that doesn't look like appinfo should be parsed as shortcuts
+        let data: &[u8] = &[
+            0x00, // Object start (not appinfo magic)
+            b't', b'e', b's', b't', 0x00, 0x01, // String type
+            b'k', b'e', b'y', 0x00, b'v', b'a', b'l', b'u', b'e', 0x00, 0x08, // Object end
+        ];
+        let result = parse(data);
+        assert!(result.is_ok());
     }
 }
