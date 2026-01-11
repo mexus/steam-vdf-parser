@@ -117,6 +117,11 @@ impl Value<'_> {
                 std::borrow::Cow::Owned(o) => o.into(),
             }),
             Value::Obj(obj) => Value::Obj(obj.into_owned()),
+            Value::I32(n) => Value::I32(n),
+            Value::U64(n) => Value::U64(n),
+            Value::Float(n) => Value::Float(n),
+            Value::Pointer(n) => Value::Pointer(n),
+            Value::Color(c) => Value::Color(c),
         }
     }
 }
