@@ -10,6 +10,43 @@ use crate::binary::types::{APPINFO_MAGIC_28, APPINFO_MAGIC_29, BinaryType};
 use crate::error::{Error, Result};
 use crate::value::{Obj, Value, Vdf};
 
+/// Parse configuration for binary VDF formats.
+///
+/// Encapsulates the differences between shortcuts.vdf and appinfo.vdf formats.
+struct ParseConfig<'a> {
+    /// String table for v29 format (empty for v28/shortcuts)
+    string_table: &'a [&'a str],
+    /// Strategy for parsing keys
+    key_mode: KeyMode,
+}
+
+/// Key parsing strategy for binary VDF formats.
+enum KeyMode {
+    /// Parse keys as null-terminated UTF-8 strings (v28, shortcuts)
+    NullTerminated,
+    /// Parse keys as u32 indices into string table (v29)
+    StringTableIndex,
+}
+
+impl KeyMode {
+    /// Parse a key from input according to this mode.
+    fn parse_key<'a>(
+        &self,
+        input: &'a [u8],
+        string_table: &'a [&'a str],
+    ) -> Result<(&'a [u8], Cow<'a, str>)> {
+        match self {
+            KeyMode::NullTerminated => {
+                let (rest, s) = parse_null_terminated_string_borrowed(input)?;
+                Ok((rest, Cow::Borrowed(s)))
+            }
+            KeyMode::StringTableIndex => {
+                parse_string_table_index_borrowed(input, string_table)
+            }
+        }
+    }
+}
+
 /// Parse binary VDF data (autodetects format).
 ///
 /// Attempts to parse as appinfo.vdf first, then falls back to shortcuts.vdf format.
@@ -39,14 +76,16 @@ pub fn parse(input: &[u8]) -> Result<Vdf<'static>> {
 ///
 /// All strings are null-terminated.
 pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'static>> {
-    let (rest, obj) = parse_object(input, &[] as &[&str])?;
+    let config = ParseConfig {
+        string_table: &[],
+        key_mode: KeyMode::NullTerminated,
+    };
+    let (_rest, obj) = parse_object(input, &config)?;
 
-    // There should be nothing left except possibly the end marker
-    let _ = rest;
-
+    // Convert to owned for public API
     Ok(Vdf {
         key: Cow::Owned("root".to_string()),
-        value: Value::Obj(obj),
+        value: Value::Obj(obj.to_owned()),
     })
 }
 
@@ -150,13 +189,20 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'static>> {
         let vdf_data = &rest[vdf_start..vdf_end];
 
         // Use v29 format (string table) if string_table_offset is Some
-        let use_string_table = string_table_offset.is_some();
-        let (_vdf_rest, app_obj) = parse_object_appinfo(vdf_data, &table_refs, use_string_table)?;
+        let config = ParseConfig {
+            string_table: &table_refs,
+            key_mode: if string_table_offset.is_some() {
+                KeyMode::StringTableIndex
+            } else {
+                KeyMode::NullTerminated
+            },
+        };
+        let (_vdf_rest, app_obj) = parse_object(vdf_data, &config)?;
 
-        // Insert with app ID as key
+        // Insert with app ID as key (convert to owned)
         obj.insert(
             Cow::Owned(app_id.to_string()),
-            Value::Obj(app_obj),
+            Value::Obj(app_obj.to_owned()),
         );
         rest = &rest[vdf_end..];
     }
@@ -167,19 +213,14 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'static>> {
     })
 }
 
-/// Parse an object from binary data for appinfo format.
+/// Parse an object from binary data.
 ///
 /// Returns the remaining input and the parsed object.
 ///
 /// # Parameters
 /// - `input`: The binary data to parse
-/// - `string_table`: The string table (empty for v28, populated for v29)
-/// - `use_string_table`: If true, use v29 parsing (uint32 indices); if false, use v28 parsing (null-terminated strings)
-fn parse_object_appinfo<'a>(
-    input: &'a [u8],
-    string_table: &[&str],
-    use_string_table: bool,
-) -> Result<(&'a [u8], Obj<'static>)> {
+/// - `config`: Parse configuration including string table and key parsing strategy
+fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a>) -> Result<(&'a [u8], Obj<'a>)> {
     let mut obj = Obj::new();
     let mut rest = input;
 
@@ -196,147 +237,66 @@ fn parse_object_appinfo<'a>(
         match typ {
             Some(BinaryType::ObjectEnd) => {
                 // Consume the end marker and return
-                rest = &rest[1..];
-                return Ok((rest, obj));
+                return Ok((&rest[1..], obj));
             }
             Some(BinaryType::None) => {
                 // Map entry: 0x00 [key] { ... entries ... }
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = if use_string_table {
-                    parse_string_table_index(rest, string_table)?
-                } else {
-                    let (r, k) = parse_null_terminated_string(rest)?;
-                    (r, Cow::Owned(k))
-                };
-                // The entries following this key belong to the new object until we see 0x08
-                let (new_rest, nested_obj) =
-                    parse_object_appinfo(new_rest, string_table, use_string_table)?;
+                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, nested_obj) = parse_object(new_rest, config)?;
                 obj.insert(key, Value::Obj(nested_obj));
                 rest = new_rest;
             }
             Some(BinaryType::String) => {
                 // String entry: 0x01 [key] [value]
-                // KEY may be from string table (v29) or inline (v28)
                 // VALUE is ALWAYS inline null-terminated string (never from string table!)
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = if use_string_table {
-                    parse_string_table_index(rest, string_table)?
-                } else {
-                    let (r, k) = parse_null_terminated_string(rest)?;
-                    (r, Cow::Owned(k))
-                };
-                // VALUE is always inline null-terminated string
-                let (new_rest, value) = parse_null_terminated_string(new_rest)?;
-                obj.insert(key, Value::Str(Cow::Owned(value)));
+                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, value) = parse_null_terminated_string_borrowed(new_rest)?;
+                obj.insert(key, Value::Str(Cow::Borrowed(value)));
                 rest = new_rest;
             }
             Some(BinaryType::Int32) => {
-                // Int32 entry: 0x02 [key] 4-byte-value
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = if use_string_table {
-                    parse_string_table_index(rest, string_table)?
-                } else {
-                    let (r, k) = parse_null_terminated_string(rest)?;
-                    (r, Cow::Owned(k))
-                };
-                if new_rest.len() < 4 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                let value =
-                    i32::from_le_bytes([new_rest[0], new_rest[1], new_rest[2], new_rest[3]]);
-                obj.insert(key, Value::Str(Cow::Owned(value.to_string())));
-                rest = &new_rest[4..];
+                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, value) = parse_value_int32(new_rest)?;
+                obj.insert(key, value);
+                rest = new_rest;
             }
             Some(BinaryType::UInt64) => {
-                // UInt64 entry: 0x07 [key] 8-byte-value
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = if use_string_table {
-                    parse_string_table_index(rest, string_table)?
-                } else {
-                    let (r, k) = parse_null_terminated_string(rest)?;
-                    (r, Cow::Owned(k))
-                };
-                if new_rest.len() < 8 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                let value = u64::from_le_bytes([
-                    new_rest[0], new_rest[1], new_rest[2], new_rest[3], new_rest[4],
-                    new_rest[5], new_rest[6], new_rest[7],
-                ]);
-                obj.insert(key, Value::Str(Cow::Owned(value.to_string())));
-                rest = &new_rest[8..];
+                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, value) = parse_value_uint64(new_rest)?;
+                obj.insert(key, value);
+                rest = new_rest;
             }
             Some(BinaryType::Float) => {
-                // Float entry: 0x03 [key] 4-byte-float
-                rest = &rest[1..];
-                let (new_rest, key) = if use_string_table {
-                    parse_string_table_index(rest, string_table)?
-                } else {
-                    let (r, k) = parse_null_terminated_string(rest)?;
-                    (r, Cow::Owned(k))
-                };
-                if new_rest.len() < 4 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                let value = f32::from_le_bytes([new_rest[0], new_rest[1], new_rest[2], new_rest[3]]);
-                obj.insert(key, Value::Str(Cow::Owned(value.to_string())));
-                rest = &new_rest[4..];
+                rest = &rest[1..]; // Skip type byte
+                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, value) = parse_value_float(new_rest)?;
+                obj.insert(key, value);
+                rest = new_rest;
             }
             Some(BinaryType::Ptr) => {
-                // Pointer entry: 0x04 [key] 4-byte-pointer
-                rest = &rest[1..];
-                let (new_rest, key) = if use_string_table {
-                    parse_string_table_index(rest, string_table)?
-                } else {
-                    let (r, k) = parse_null_terminated_string(rest)?;
-                    (r, Cow::Owned(k))
-                };
-                if new_rest.len() < 4 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                // Just read as u32 and format as hex
-                let value = u32::from_le_bytes([new_rest[0], new_rest[1], new_rest[2], new_rest[3]]);
-                obj.insert(
-                    key,
-                    Value::Str(Cow::Owned(format!("0x{:08x}", value))),
-                );
-                rest = &new_rest[4..];
+                rest = &rest[1..]; // Skip type byte
+                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, value) = parse_value_ptr(new_rest)?;
+                obj.insert(key, value);
+                rest = new_rest;
             }
             Some(BinaryType::WString) => {
-                // WideString entry: 0x05 [key] utf16-string\0\0
-                // Note: WString seems to still use inline strings even in v29
-                rest = &rest[1..];
-                let (new_rest, key) = if use_string_table {
-                    parse_string_table_index(rest, string_table)?
-                } else {
-                    let (r, k) = parse_null_terminated_string(rest)?;
-                    (r, Cow::Owned(k))
-                };
-                let (new_rest, value) = parse_null_terminated_wstring(new_rest)?;
-                obj.insert(key, Value::Str(Cow::Owned(value)));
+                rest = &rest[1..]; // Skip type byte
+                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, value) = parse_value_wstring(new_rest)?;
+                obj.insert(key, value);
                 rest = new_rest;
             }
             Some(BinaryType::Color) => {
-                // Color entry: 0x06 [key] 4-bytes RGBA
-                rest = &rest[1..];
-                let (new_rest, key) = if use_string_table {
-                    parse_string_table_index(rest, string_table)?
-                } else {
-                    let (r, k) = parse_null_terminated_string(rest)?;
-                    (r, Cow::Owned(k))
-                };
-                if new_rest.len() < 4 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                let r = new_rest[0];
-                let g = new_rest[1];
-                let b = new_rest[2];
-                let a = new_rest[3];
-                obj.insert(
-                    key,
-                    Value::Str(Cow::Owned(format!("{}{}{}{}", r, g, b, a))),
-                );
-                rest = &new_rest[4..];
+                rest = &rest[1..]; // Skip type byte
+                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, value) = parse_value_color(new_rest)?;
+                obj.insert(key, value);
+                rest = new_rest;
             }
             None => {
                 // Unknown type byte
@@ -349,156 +309,83 @@ fn parse_object_appinfo<'a>(
     }
 }
 
-/// Parse an object from binary data.
+// ===== Value Parser Functions =====
+
+/// Parse an Int32 value (4 bytes, little-endian) as a string.
+fn parse_value_int32<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
+    if input.len() < 4 {
+        return Err(Error::UnexpectedEndOfInput);
+    }
+    let value = i32::from_le_bytes([input[0], input[1], input[2], input[3]]);
+    Ok((&input[4..], Value::Str(Cow::Owned(value.to_string()))))
+}
+
+/// Parse a UInt64 value (8 bytes, little-endian) as a string.
+fn parse_value_uint64<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
+    if input.len() < 8 {
+        return Err(Error::UnexpectedEndOfInput);
+    }
+    let value = u64::from_le_bytes([
+        input[0], input[1], input[2], input[3], input[4], input[5], input[6], input[7],
+    ]);
+    Ok((&input[8..], Value::Str(Cow::Owned(value.to_string()))))
+}
+
+/// Parse a Float value (4 bytes, little-endian) as a string.
+fn parse_value_float<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
+    if input.len() < 4 {
+        return Err(Error::UnexpectedEndOfInput);
+    }
+    let value = f32::from_le_bytes([input[0], input[1], input[2], input[3]]);
+    Ok((&input[4..], Value::Str(Cow::Owned(value.to_string()))))
+}
+
+/// Parse a Pointer value (4 bytes) formatted as hex.
+fn parse_value_ptr<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
+    if input.len() < 4 {
+        return Err(Error::UnexpectedEndOfInput);
+    }
+    let value = u32::from_le_bytes([input[0], input[1], input[2], input[3]]);
+    Ok((
+        &input[4..],
+        Value::Str(Cow::Owned(format!("0x{:08x}", value))),
+    ))
+}
+
+/// Parse a WideString value (UTF-16LE, null-terminated).
+fn parse_value_wstring<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
+    let (rest, string) = parse_null_terminated_wstring(input)?;
+    Ok((rest, Value::Str(Cow::Owned(string))))
+}
+
+/// Parse a Color value (4 bytes RGBA) as a concatenated string.
+fn parse_value_color<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
+    if input.len() < 4 {
+        return Err(Error::UnexpectedEndOfInput);
+    }
+    let r = input[0];
+    let g = input[1];
+    let b = input[2];
+    let a = input[3];
+    Ok((
+        &input[4..],
+        Value::Str(Cow::Owned(format!("{}{}{}{}", r, g, b, a))),
+    ))
+}
+
+// ===== String Parsing Functions =====
+
+/// Parse a null-terminated string (UTF-8), returning a borrowed slice.
 ///
-/// Returns the remaining input and the parsed object.
-/// This is used for shortcuts.vdf format which doesn't use string tables.
-fn parse_object<'a>(input: &'a [u8], string_table: &[&str]) -> Result<(&'a [u8], Obj<'static>)> {
-    let mut obj = Obj::new();
-    let mut rest = input;
-
-    loop {
-        if rest.is_empty() {
-            // At root level, EOF is acceptable - file may end without trailing 0x08
-            return Ok((rest, obj));
-        }
-
-        // Peek at the type byte
-        let type_byte = rest[0];
-        let typ = BinaryType::from_byte(type_byte);
-
-        match typ {
-            Some(BinaryType::ObjectEnd) => {
-                // Consume the end marker and return
-                rest = &rest[1..];
-                return Ok((rest, obj));
-            }
-            Some(BinaryType::None) => {
-                // Map entry: 0x00 "name" { ... entries ... }
-                // Parse the key, then recursively parse entries into a new object
-                rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = parse_null_terminated_string(rest)?;
-                // The entries following this key belong to the new object until we see 0x08
-                let (new_rest, nested_obj) = parse_object(new_rest, string_table)?;
-                obj.insert(Cow::Owned(key.to_string()), Value::Obj(nested_obj));
-                rest = new_rest;
-            }
-            Some(BinaryType::String) => {
-                // String entry: 0x01 "key" "value"
-                rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = parse_null_terminated_string(rest)?;
-                let (new_rest, value) = parse_string_value(new_rest, string_table)?;
-                obj.insert(Cow::Owned(key.to_string()), Value::Str(value));
-                rest = new_rest;
-            }
-            Some(BinaryType::Int32) => {
-                // Int32 entry: 0x02 "key" 4-byte-value
-                rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = parse_null_terminated_string(rest)?;
-                if new_rest.len() < 4 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                let value =
-                    i32::from_le_bytes([new_rest[0], new_rest[1], new_rest[2], new_rest[3]]);
-                obj.insert(
-                    Cow::Owned(key.to_string()),
-                    Value::Str(Cow::Owned(value.to_string())),
-                );
-                rest = &new_rest[4..];
-            }
-            Some(BinaryType::Float) => {
-                // Float entry: 0x03 "key" 4-byte-float
-                rest = &rest[1..];
-                let (new_rest, key) = parse_null_terminated_string(rest)?;
-                if new_rest.len() < 4 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                let value = f32::from_le_bytes([new_rest[0], new_rest[1], new_rest[2], new_rest[3]]);
-                obj.insert(
-                    Cow::Owned(key.to_string()),
-                    Value::Str(Cow::Owned(value.to_string())),
-                );
-                rest = &new_rest[4..];
-            }
-            Some(BinaryType::Ptr) => {
-                // Pointer entry: 0x04 "key" 4-byte-pointer
-                rest = &rest[1..];
-                let (new_rest, key) = parse_null_terminated_string(rest)?;
-                if new_rest.len() < 4 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                // Just read as u32 and format as hex
-                let value = u32::from_le_bytes([new_rest[0], new_rest[1], new_rest[2], new_rest[3]]);
-                obj.insert(
-                    Cow::Owned(key.to_string()),
-                    Value::Str(Cow::Owned(format!("0x{:08x}", value))),
-                );
-                rest = &new_rest[4..];
-            }
-            Some(BinaryType::WString) => {
-                // WideString entry: 0x05 "key" utf16-string\0\0
-                rest = &rest[1..];
-                let (new_rest, key) = parse_null_terminated_string(rest)?;
-                let (new_rest, value) = parse_null_terminated_wstring(new_rest)?;
-                obj.insert(Cow::Owned(key.to_string()), Value::Str(Cow::Owned(value)));
-                rest = new_rest;
-            }
-            Some(BinaryType::Color) => {
-                // Color entry: 0x06 "key" 4-bytes RGBA
-                rest = &rest[1..];
-                let (new_rest, key) = parse_null_terminated_string(rest)?;
-                if new_rest.len() < 4 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                let r = new_rest[0];
-                let g = new_rest[1];
-                let b = new_rest[2];
-                let a = new_rest[3];
-                obj.insert(
-                    Cow::Owned(key.to_string()),
-                    Value::Str(Cow::Owned(format!("{}{}{}{}", r, g, b, a))),
-                );
-                rest = &new_rest[4..];
-            }
-            Some(BinaryType::UInt64) => {
-                // UInt64 entry: 0x07 "key" 8-byte-value
-                rest = &rest[1..];
-                let (new_rest, key) = parse_null_terminated_string(rest)?;
-                if new_rest.len() < 8 {
-                    return Err(Error::UnexpectedEndOfInput);
-                }
-                let value = u64::from_le_bytes([
-                    new_rest[0], new_rest[1], new_rest[2], new_rest[3], new_rest[4],
-                    new_rest[5], new_rest[6], new_rest[7],
-                ]);
-                obj.insert(
-                    Cow::Owned(key.to_string()),
-                    Value::Str(Cow::Owned(value.to_string())),
-                );
-                rest = &new_rest[8..];
-            }
-            None => {
-                // Unknown type byte
-                return Err(Error::UnknownType {
-                    type_byte,
-                    offset: input.len() - rest.len(),
-                });
-            }
-        }
-    }
-}
-
-/// Parse a null-terminated string (UTF-8).
-fn parse_null_terminated_string(input: &[u8]) -> Result<(&[u8], String)> {
+/// This is the zero-copy version that borrows from the input when possible.
+fn parse_null_terminated_string_borrowed(input: &[u8]) -> Result<(&[u8], &str)> {
     let null_pos = input
         .iter()
         .position(|&b| b == 0)
         .ok_or(Error::UnexpectedEndOfInput)?;
 
     let bytes = &input[..null_pos];
-    let string = std::str::from_utf8(bytes)
-        .map_err(|_| Error::InvalidUtf8 { offset: 0 })?
-        .to_string();
+    let string = std::str::from_utf8(bytes).map_err(|_| Error::InvalidUtf8 { offset: 0 })?;
 
     Ok((&input[null_pos + 1..], string))
 }
@@ -506,6 +393,7 @@ fn parse_null_terminated_string(input: &[u8]) -> Result<(&[u8], String)> {
 /// Parse a null-terminated wide string (UTF-16LE).
 ///
 /// WideString is terminated by two zero bytes (0x00 0x00).
+/// Note: This allocates due to UTF-16 to UTF-8 conversion.
 fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
     // Find the double-null terminator
     let mut i = 0;
@@ -526,27 +414,46 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
         .map(|j| u16::from_le_bytes([input[j], input[j + 1]]))
         .collect();
 
-    let string = String::from_utf16(&utf16_data)
-        .map_err(|_| Error::InvalidUtf8 { offset: 0 })?
-        .to_string();
+    let string =
+        String::from_utf16(&utf16_data).map_err(|_| Error::InvalidUtf8 { offset: 0 })?;
 
     Ok((&input[i + 2..], string))
 }
 
-/// Parse a string value (either inline or from string table).
+/// Parse a uint32 string table index and return the referenced string.
 ///
-/// In appinfo.vdf format with string table, type 0x02 can indicate a pooled string.
-/// Note: shortcuts.vdf doesn't use string tables, so the parameter is unused.
-fn parse_string_value<'a>(
+/// In v29 format, strings are stored as uint32 indices into the string table
+/// rather than inline null-terminated strings.
+/// Note: Indices are stored in LITTLE-ENDIAN format.
+///
+/// This returns borrowed data when the index is valid, allowing zero-copy parsing.
+fn parse_string_table_index_borrowed<'a>(
     input: &'a [u8],
-    _string_table: &[&str],
-) -> Result<(&'a [u8], Cow<'static, str>)> {
-    // Check if this is a pooled string (starts with a special marker)
-    // In practice, we need to read the string and see if it's a valid reference
+    string_table: &'a [&'a str],
+) -> Result<(&'a [u8], Cow<'a, str>)> {
+    if input.len() < 4 {
+        return Err(Error::UnexpectedEndOfInput);
+    }
 
-    let (rest, string) = parse_null_terminated_string(input)?;
+    let index = u32::from_le_bytes([input[0], input[1], input[2], input[3]]) as usize;
 
-    Ok((rest, Cow::Owned(string)))
+    if index >= string_table.len() {
+        // Try big-endian as fallback (some entries may use different endianness)
+        let index_be = u32::from_be_bytes([input[0], input[1], input[2], input[3]]) as usize;
+        if index_be < string_table.len() {
+            return Ok((
+                &input[4..],
+                Cow::Owned(string_table[index_be].to_string()),
+            ));
+        }
+        return Err(Error::InvalidStringIndex {
+            index,
+            max: string_table.len(),
+        });
+    }
+
+    // Borrow directly from string table (zero-copy!)
+    Ok((&input[4..], Cow::Borrowed(string_table[index])))
 }
 
 /// Parse the string table section (v29 format).
@@ -570,44 +477,12 @@ fn parse_string_table(input: &[u8]) -> Result<Vec<String>> {
         if rest.is_empty() {
             return Err(Error::UnexpectedEndOfInput);
         }
-        let (new_rest, string) = parse_null_terminated_string(rest)?;
-        strings.push(string);
+        let (new_rest, s) = parse_null_terminated_string_borrowed(rest)?;
+        strings.push(s.to_string());
         rest = new_rest;
     }
 
     Ok(strings)
-}
-
-/// Parse a uint32 string table index and return the referenced string.
-///
-/// In v29 format, strings are stored as uint32 indices into the string table
-/// rather than inline null-terminated strings.
-/// Note: Indices are stored in LITTLE-ENDIAN format.
-fn parse_string_table_index<'a>(
-    input: &'a [u8],
-    string_table: &[&str],
-) -> Result<(&'a [u8], Cow<'static, str>)> {
-    if input.len() < 4 {
-        return Err(Error::UnexpectedEndOfInput);
-    }
-
-    let index = u32::from_le_bytes([input[0], input[1], input[2], input[3]]) as usize;
-
-    if index >= string_table.len() {
-        // Try big-endian as fallback (some entries may use different endianness)
-        let index_be = u32::from_be_bytes([input[0], input[1], input[2], input[3]]) as usize;
-        if index_be < string_table.len() {
-            let string = string_table[index_be];
-            return Ok((&input[4..], Cow::Owned(string.to_string())));
-        }
-        return Err(Error::InvalidStringIndex {
-            index,
-            max: string_table.len(),
-        });
-    }
-
-    let string = string_table[index];
-    Ok((&input[4..], Cow::Owned(string.to_string())))
 }
 
 #[cfg(test)]
@@ -618,19 +493,16 @@ mod tests {
     fn test_parse_simple_object() {
         // Simple binary VDF: "test" { "key" "value" }
         let data: &[u8] = &[
-            0x00, // Object start
+            0x00,                   // Object start
             b't', b'e', b's', b't', 0x00, // Key "test"
-            0x01, // String type
+            0x01,                   // String type
             b'k', b'e', b'y', 0x00, // Key "key"
             b'v', b'a', b'l', b'u', b'e', 0x00, // Value "value"
-            0x08, // Object end
+            0x08,                   // Object end
         ];
 
         let result = parse_shortcuts(data);
-        if let Err(e) = &result {
-            println!("Error: {:?}", e);
-        }
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
 
         let vdf = result.unwrap();
         assert_eq!(vdf.key, "root");
@@ -648,15 +520,15 @@ mod tests {
     fn test_parse_nested_objects() {
         // Nested objects: "outer" { "inner" { "key" "value" } }
         let data: &[u8] = &[
-            0x00, // Object start
+            0x00,                   // Object start
             b'o', b'u', b't', b'e', b'r', 0x00, // Key "outer"
-            0x00, // Nested object start
+            0x00,                   // Nested object start
             b'i', b'n', b'n', b'e', b'r', 0x00, // Key "inner"
-            0x01, // String type
+            0x01,                   // String type
             b'k', b'e', b'y', 0x00, // Key "key"
             b'v', b'a', b'l', b'u', b'e', 0x00, // Value "value"
-            0x08, // End inner object
-            0x08, // End outer object
+            0x08,                   // End inner object
+            0x08,                   // End outer object
         ];
 
         let result = parse_shortcuts(data);
@@ -674,12 +546,12 @@ mod tests {
     fn test_parse_int32_value() {
         // Int32 value: "root" { "number" "42" }
         let data: &[u8] = &[
-            0x00, // Object start
+            0x00,                   // Object start
             b'r', b'o', b'o', b't', 0x00, // Key "root"
-            0x02, // Int32 type
+            0x02,                   // Int32 type
             b'n', b'u', b'm', b'b', b'e', b'r', 0x00, // Key "number"
-            42, 0, 0, 0,    // Value 42 (little-endian)
-            0x08, // Object end
+            42, 0, 0, 0,            // Value 42 (little-endian)
+            0x08,                   // Object end
         ];
 
         let result = parse_shortcuts(data);
@@ -690,5 +562,93 @@ mod tests {
         let root = obj.get("root").and_then(|v| v.as_obj()).unwrap();
         let value = root.get("number").and_then(|v| v.as_str());
         assert_eq!(value, Some(&Cow::Owned("42".to_string())));
+    }
+
+    #[test]
+    fn test_parse_uint64_value() {
+        // UInt64 value
+        let data: &[u8] = &[
+            0x00, // Object start
+            b'r', b'o', b'o', b't', 0x00, // Key "root"
+            0x07, // UInt64 type
+            b'n', b'u', b'm', b'b', b'e', b'r', 0x00, // Key "number"
+            0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, // Value u32::MAX as u64
+            0x08, // Object end
+        ];
+
+        let result = parse_shortcuts(data);
+        assert!(result.is_ok());
+
+        let vdf = result.unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let root = obj.get("root").and_then(|v| v.as_obj()).unwrap();
+        let value = root.get("number").and_then(|v| v.as_str());
+        assert_eq!(value, Some(&Cow::Owned("4294967295".to_string())));
+    }
+
+    #[test]
+    fn test_parse_float_value() {
+        // Float value
+        let data: &[u8] = &[
+            0x00, // Object start
+            b'r', b'o', b'o', b't', 0x00, // Key "root"
+            0x03, // Float type
+            b'v', b'a', b'l', 0x00, // Key "val"
+            0x00, 0x00, 0x80, 0x3F, // Value 1.0 (little-endian)
+            0x08, // Object end
+        ];
+
+        let result = parse_shortcuts(data);
+        assert!(result.is_ok());
+
+        let vdf = result.unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let root = obj.get("root").and_then(|v| v.as_obj()).unwrap();
+        let value = root.get("val").and_then(|v| v.as_str());
+        assert_eq!(value, Some(&Cow::Owned("1".to_string())));
+    }
+
+    #[test]
+    fn test_parse_ptr_value() {
+        // Pointer value
+        let data: &[u8] = &[
+            0x00, // Object start
+            b'r', b'o', b'o', b't', 0x00, // Key "root"
+            0x04, // Ptr type
+            b'p', b't', b'r', 0x00, // Key "ptr"
+            0xAB, 0xCD, 0xEF, 0x12, // Value 0x12EFCDAB
+            0x08, // Object end
+        ];
+
+        let result = parse_shortcuts(data);
+        assert!(result.is_ok());
+
+        let vdf = result.unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let root = obj.get("root").and_then(|v| v.as_obj()).unwrap();
+        let value = root.get("ptr").and_then(|v| v.as_str());
+        assert_eq!(value, Some(&Cow::Owned("0x12efcdab".to_string())));
+    }
+
+    #[test]
+    fn test_parse_color_value() {
+        // Color value: RGBA (255, 0, 0, 255) = "25500255"
+        let data: &[u8] = &[
+            0x00, // Object start
+            b'r', b'o', b'o', b't', 0x00, // Key "root"
+            0x06, // Color type
+            b'c', b'o', b'l', 0x00, // Key "col"
+            0xFF, 0x00, 0x00, 0xFF, // RGBA: red, opaque
+            0x08, // Object end
+        ];
+
+        let result = parse_shortcuts(data);
+        assert!(result.is_ok());
+
+        let vdf = result.unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let root = obj.get("root").and_then(|v| v.as_obj()).unwrap();
+        let value = root.get("col").and_then(|v| v.as_str());
+        assert_eq!(value, Some(&Cow::Owned("25500255".to_string())));
     }
 }
