@@ -39,6 +39,9 @@ pub use text::parse_text;
 
 /// Parse VDF from binary format (autodetects shortcuts or appinfo format).
 ///
+/// This function returns zero-copy data where possible - strings are borrowed
+/// from the input buffer. Use `.into_owned()` to convert to an owned `Vdf<'static>`.
+///
 /// # Example
 ///
 /// ```no_check
@@ -46,61 +49,89 @@ pub use text::parse_text;
 ///
 /// let data = std::fs::read("shortcuts.vdf")?;
 /// let vdf = parse_binary(&data)?;
+/// // For data that needs to outlive the input:
+/// let owned = vdf.into_owned();
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn parse_binary(input: &[u8]) -> Result<Vdf<'static>> {
+pub fn parse_binary(input: &[u8]) -> Result<Vdf<'_>> {
     binary::parse(input)
 }
 
 /// Parse a shortcuts.vdf format binary file.
-pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'static>> {
+///
+/// This function returns zero-copy data where possible - strings are borrowed
+/// from the input buffer. Use `.into_owned()` to convert to an owned `Vdf<'static>`.
+pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'_>> {
     binary::parse_shortcuts(input)
 }
 
 /// Parse an appinfo.vdf format binary file.
-pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'static>> {
+///
+/// This function returns zero-copy data where possible - strings are borrowed
+/// from the input buffer. Use `.into_owned()` to convert to an owned `Vdf<'static>`.
+pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
     binary::parse_appinfo(input)
 }
 
 /// Parse VDF from a text file.
+///
+/// This is a convenience function that reads a file and parses it.
+/// Returns an owned `Vdf<'static>` since the file content is owned.
 pub fn parse_text_file(path: impl AsRef<std::path::Path>) -> Result<Vdf<'static>> {
     let content = std::fs::read_to_string(path)?;
-    Ok(parse_text(&content)?.to_owned())
+    Ok(parse_text(&content)?.into_owned())
 }
 
 /// Parse VDF from a binary file.
+///
+/// This is a convenience function that reads a file and parses it.
+/// Returns an owned `Vdf<'static>` since the file content is owned.
 pub fn parse_binary_file(path: impl AsRef<std::path::Path>) -> Result<Vdf<'static>> {
     let content = std::fs::read(path)?;
-    parse_binary(&content)
+    Ok(parse_binary(&content)?.into_owned())
 }
 
-// Add conversion from borrowed to owned
+// Convert from borrowed to owned
 impl Vdf<'_> {
     /// Convert to an owned version (with 'static lifetime).
-    pub fn to_owned(&self) -> Vdf<'static> {
+    ///
+    /// This creates a new `Vdf<'static>` with all strings owned, allowing the
+    /// data to outlive the original input.
+    pub fn into_owned(self) -> Vdf<'static> {
         Vdf {
-            key: self.key.to_string().into(),
-            value: self.value.to_owned(),
+            key: match self.key {
+                std::borrow::Cow::Borrowed(s) => s.to_string().into(),
+                std::borrow::Cow::Owned(s) => s.into(),
+            },
+            value: self.value.into_owned(),
         }
     }
 }
 
 impl Value<'_> {
     /// Convert to an owned version (with 'static lifetime).
-    pub fn to_owned(&self) -> Value<'static> {
+    pub fn into_owned(self) -> Value<'static> {
         match self {
-            Value::Str(s) => Value::Str(s.to_string().into()),
-            Value::Obj(obj) => Value::Obj(obj.to_owned()),
+            Value::Str(s) => Value::Str(match s {
+                std::borrow::Cow::Borrowed(b) => b.to_string().into(),
+                std::borrow::Cow::Owned(o) => o.into(),
+            }),
+            Value::Obj(obj) => Value::Obj(obj.into_owned()),
         }
     }
 }
 
 impl Obj<'_> {
     /// Convert to an owned version (with 'static lifetime).
-    pub fn to_owned(&self) -> Obj<'static> {
+    pub fn into_owned(self) -> Obj<'static> {
         let mut new = Obj::new();
         for (k, v) in self.iter() {
-            new.insert(k.to_string().into(), v.to_owned());
+            let owned_key = match k {
+                std::borrow::Cow::Borrowed(b) => b.to_string().into(),
+                std::borrow::Cow::Owned(o) => o.clone().into(),
+            };
+            // Clone the value since we're iterating
+            new.insert(owned_key, v.clone().into_owned());
         }
         new
     }

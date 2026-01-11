@@ -14,8 +14,8 @@ use crate::value::{Obj, Value, Vdf};
 ///
 /// Encapsulates the differences between shortcuts.vdf and appinfo.vdf formats.
 struct ParseConfig<'a> {
-    /// String table for v29 format (empty for v28/shortcuts)
-    string_table: &'a [&'a str],
+    /// String table for v29 format (cloned for each parse context)
+    string_table: Option<StringTable<'a>>,
     /// Strategy for parsing keys
     key_mode: KeyMode,
 }
@@ -28,12 +28,34 @@ enum KeyMode {
     StringTableIndex,
 }
 
+/// String table for v29 appinfo format.
+///
+/// Encapsulates pre-extracted strings from the string table section,
+/// enabling O(1) lookups by index.
+#[derive(Clone)]
+struct StringTable<'a> {
+    strings: Vec<&'a str>,
+}
+
+impl<'a> StringTable<'a> {
+    /// Get a string by index.
+    fn get(&self, index: usize) -> Result<&'a str> {
+        self.strings
+            .get(index)
+            .copied()
+            .ok_or(Error::InvalidStringIndex {
+                index,
+                max: self.strings.len(),
+            })
+    }
+}
+
 impl KeyMode {
     /// Parse a key from input according to this mode.
     fn parse_key<'a>(
         &self,
         input: &'a [u8],
-        string_table: &'a [&'a str],
+        config: &ParseConfig<'a>,
     ) -> Result<(&'a [u8], Cow<'a, str>)> {
         match self {
             KeyMode::NullTerminated => {
@@ -41,7 +63,12 @@ impl KeyMode {
                 Ok((rest, Cow::Borrowed(s)))
             }
             KeyMode::StringTableIndex => {
-                parse_string_table_index_borrowed(input, string_table)
+                if input.len() < 4 {
+                    return Err(Error::UnexpectedEndOfInput);
+                }
+                let index = u32::from_le_bytes([input[0], input[1], input[2], input[3]]) as usize;
+                let s = config.string_table.as_ref().unwrap().get(index)?;
+                Ok((&input[4..], Cow::Borrowed(s)))
             }
         }
     }
@@ -50,22 +77,28 @@ impl KeyMode {
 /// Parse binary VDF data (autodetects format).
 ///
 /// Attempts to parse as appinfo.vdf first, then falls back to shortcuts.vdf format.
-pub fn parse(input: &[u8]) -> Result<Vdf<'static>> {
+/// For shortcuts format, returns zero-copy data borrowed from input.
+/// For appinfo format, returns mixed data: root key and app ID keys are owned,
+/// but actual parsed values (including string table entries) are borrowed.
+pub fn parse(input: &[u8]) -> Result<Vdf<'_>> {
     // Check if this looks like appinfo format (starts with magic)
     if input.len() >= 4 {
         let magic = u32::from_le_bytes([input[0], input[1], input[2], input[3]]);
         if magic == APPINFO_MAGIC_28 || magic == APPINFO_MAGIC_29 {
+            // parse_appinfo returns Vdf<'static>, which is compatible with Vdf<'_>
             return parse_appinfo(input);
         }
     }
 
-    // Otherwise, parse as shortcuts format
+    // Otherwise, parse as shortcuts format (zero-copy)
     parse_shortcuts(input)
 }
 
 /// Parse shortcuts.vdf format binary data.
 ///
 /// This is the simpler binary format used by Steam for shortcuts and other data.
+///
+/// This function returns zero-copy data - strings are borrowed from the input buffer.
 ///
 /// Format:
 /// - Each entry starts with a type byte
@@ -75,21 +108,23 @@ pub fn parse(input: &[u8]) -> Result<Vdf<'static>> {
 /// - Type 0x08: Object end
 ///
 /// All strings are null-terminated.
-pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'static>> {
+pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'_>> {
     let config = ParseConfig {
-        string_table: &[],
+        string_table: None,
         key_mode: KeyMode::NullTerminated,
     };
     let (_rest, obj) = parse_object(input, &config)?;
 
-    // Convert to owned for public API
     Ok(Vdf {
-        key: Cow::Owned("root".to_string()),
-        value: Value::Obj(obj.to_owned()),
+        key: Cow::Borrowed("root"),
+        value: Value::Obj(obj),
     })
 }
 
 /// Parse appinfo.vdf format binary data.
+///
+/// This function returns zero-copy data where possible - strings are borrowed from
+/// the input buffer (including string table entries in v29 format).
 ///
 /// Format:
 /// - 4 bytes: Magic number (0x07564428 or 0x07564429)
@@ -102,14 +137,14 @@ pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'static>> {
 ///   - 4 bytes: InfoState
 ///   - 4 bytes: LastUpdated (Unix timestamp)
 ///   - 8 bytes: AccessToken
-///   - 20 bytes: SHA1 Hash
+///   - 20 bytes: SHA1 of text data
 ///   - 4 bytes: ChangeNumber
-///   - 20 bytes: Binary SHA1
+///   - 20 bytes: SHA1 of binary data
 ///   - Then the VDF data for the app (starts with 0x00)
 /// - String table (if magic == 0x07564429, at string_table_offset)
 ///
 /// App entry header is 68 bytes.
-pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'static>> {
+pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
     if input.len() < 16 {
         return Err(Error::UnexpectedEndOfInput);
     }
@@ -132,18 +167,15 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'static>> {
     };
 
     // Parse the string table if present
-    let string_table: Vec<String> = if let Some(offset) = string_table_offset {
+    let string_table = if let Some(offset) = string_table_offset {
         let table_start = offset;
         if table_start >= input.len() {
             return Err(Error::UnexpectedEndOfInput);
         }
-        parse_string_table(&input[table_start..])?
+        Some(parse_string_table(&input[table_start..])?)
     } else {
-        Vec::new()
+        None
     };
-
-    // Convert to string references for use in parsing
-    let table_refs: Vec<&str> = string_table.iter().map(|s| s.as_str()).collect();
 
     let mut obj = Obj::new();
 
@@ -174,7 +206,7 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'static>> {
         let size = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]) as usize;
 
         // The 60 bytes after the size field:
-        // info_state(4) + last_updated(4) + pics_token(8) + sha1_text(20) + change_number(4) + sha1_binary(20)
+        // info_state(4) + last_updated(4) + access_token(8) + sha1_text(20) + change_number(4) + sha1_binary(20)
         let header_after_size = 60;
 
         // VDF data starts after 68-byte header (app_id(4) + size(4) + header_after_size(60))
@@ -190,7 +222,7 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'static>> {
 
         // Use v29 format (string table) if string_table_offset is Some
         let config = ParseConfig {
-            string_table: &table_refs,
+            string_table: string_table.clone(),
             key_mode: if string_table_offset.is_some() {
                 KeyMode::StringTableIndex
             } else {
@@ -199,11 +231,8 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'static>> {
         };
         let (_vdf_rest, app_obj) = parse_object(vdf_data, &config)?;
 
-        // Insert with app ID as key (convert to owned)
-        obj.insert(
-            Cow::Owned(app_id.to_string()),
-            Value::Obj(app_obj.to_owned()),
-        );
+        // Insert with app ID as key
+        obj.insert(Cow::Owned(app_id.to_string()), Value::Obj(app_obj));
         rest = &rest[vdf_end..];
     }
 
@@ -242,7 +271,7 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a>) -> Result<(&'a [u
             Some(BinaryType::None) => {
                 // Map entry: 0x00 [key] { ... entries ... }
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
                 let (new_rest, nested_obj) = parse_object(new_rest, config)?;
                 obj.insert(key, Value::Obj(nested_obj));
                 rest = new_rest;
@@ -251,49 +280,49 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a>) -> Result<(&'a [u
                 // String entry: 0x01 [key] [value]
                 // VALUE is ALWAYS inline null-terminated string (never from string table!)
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
                 let (new_rest, value) = parse_null_terminated_string_borrowed(new_rest)?;
                 obj.insert(key, Value::Str(Cow::Borrowed(value)));
                 rest = new_rest;
             }
             Some(BinaryType::Int32) => {
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
                 let (new_rest, value) = parse_value_int32(new_rest)?;
                 obj.insert(key, value);
                 rest = new_rest;
             }
             Some(BinaryType::UInt64) => {
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
                 let (new_rest, value) = parse_value_uint64(new_rest)?;
                 obj.insert(key, value);
                 rest = new_rest;
             }
             Some(BinaryType::Float) => {
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
                 let (new_rest, value) = parse_value_float(new_rest)?;
                 obj.insert(key, value);
                 rest = new_rest;
             }
             Some(BinaryType::Ptr) => {
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
                 let (new_rest, value) = parse_value_ptr(new_rest)?;
                 obj.insert(key, value);
                 rest = new_rest;
             }
             Some(BinaryType::WString) => {
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
                 let (new_rest, value) = parse_value_wstring(new_rest)?;
                 obj.insert(key, value);
                 rest = new_rest;
             }
             Some(BinaryType::Color) => {
                 rest = &rest[1..]; // Skip type byte
-                let (new_rest, key) = config.key_mode.parse_key(rest, config.string_table)?;
+                let (new_rest, key) = config.key_mode.parse_key(rest, config)?;
                 let (new_rest, value) = parse_value_color(new_rest)?;
                 obj.insert(key, value);
                 rest = new_rest;
@@ -414,54 +443,19 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
         .map(|j| u16::from_le_bytes([input[j], input[j + 1]]))
         .collect();
 
-    let string =
-        String::from_utf16(&utf16_data).map_err(|_| Error::InvalidUtf8 { offset: 0 })?;
+    let string = String::from_utf16(&utf16_data).map_err(|_| Error::InvalidUtf8 { offset: 0 })?;
 
     Ok((&input[i + 2..], string))
 }
 
-/// Parse a uint32 string table index and return the referenced string.
-///
-/// In v29 format, strings are stored as uint32 indices into the string table
-/// rather than inline null-terminated strings.
-/// Note: Indices are stored in LITTLE-ENDIAN format.
-///
-/// This returns borrowed data when the index is valid, allowing zero-copy parsing.
-fn parse_string_table_index_borrowed<'a>(
-    input: &'a [u8],
-    string_table: &'a [&'a str],
-) -> Result<(&'a [u8], Cow<'a, str>)> {
-    if input.len() < 4 {
-        return Err(Error::UnexpectedEndOfInput);
-    }
-
-    let index = u32::from_le_bytes([input[0], input[1], input[2], input[3]]) as usize;
-
-    if index >= string_table.len() {
-        // Try big-endian as fallback (some entries may use different endianness)
-        let index_be = u32::from_be_bytes([input[0], input[1], input[2], input[3]]) as usize;
-        if index_be < string_table.len() {
-            return Ok((
-                &input[4..],
-                Cow::Owned(string_table[index_be].to_string()),
-            ));
-        }
-        return Err(Error::InvalidStringIndex {
-            index,
-            max: string_table.len(),
-        });
-    }
-
-    // Borrow directly from string table (zero-copy!)
-    Ok((&input[4..], Cow::Borrowed(string_table[index])))
-}
-
 /// Parse the string table section (v29 format).
+///
+/// Returns a `StringTable` containing pre-extracted strings for O(1) lookups.
 ///
 /// Format:
 /// - 4 bytes: string_count (little-endian u32)
 /// - Then string_count null-terminated UTF-8 strings
-fn parse_string_table(input: &[u8]) -> Result<Vec<String>> {
+fn parse_string_table(input: &[u8]) -> Result<StringTable<'_>> {
     if input.len() < 4 {
         return Err(Error::UnexpectedEndOfInput);
     }
@@ -472,17 +466,23 @@ fn parse_string_table(input: &[u8]) -> Result<Vec<String>> {
     let mut strings = Vec::with_capacity(string_count);
     let mut rest = &input[4..];
 
-    // Read exactly string_count null-terminated strings
+    // Extract each null-terminated string
     for _ in 0..string_count {
         if rest.is_empty() {
             return Err(Error::UnexpectedEndOfInput);
         }
-        let (new_rest, s) = parse_null_terminated_string_borrowed(rest)?;
-        strings.push(s.to_string());
-        rest = new_rest;
+        let null_pos = rest
+            .iter()
+            .position(|&b| b == 0)
+            .ok_or(Error::UnexpectedEndOfInput)?;
+        let string_bytes = &rest[..null_pos];
+        let string =
+            std::str::from_utf8(string_bytes).map_err(|_| Error::InvalidUtf8 { offset: 0 })?;
+        strings.push(string);
+        rest = &rest[null_pos + 1..];
     }
 
-    Ok(strings)
+    Ok(StringTable { strings })
 }
 
 #[cfg(test)]
@@ -493,12 +493,12 @@ mod tests {
     fn test_parse_simple_object() {
         // Simple binary VDF: "test" { "key" "value" }
         let data: &[u8] = &[
-            0x00,                   // Object start
+            0x00, // Object start
             b't', b'e', b's', b't', 0x00, // Key "test"
-            0x01,                   // String type
+            0x01, // String type
             b'k', b'e', b'y', 0x00, // Key "key"
             b'v', b'a', b'l', b'u', b'e', 0x00, // Value "value"
-            0x08,                   // Object end
+            0x08, // Object end
         ];
 
         let result = parse_shortcuts(data);
@@ -520,15 +520,15 @@ mod tests {
     fn test_parse_nested_objects() {
         // Nested objects: "outer" { "inner" { "key" "value" } }
         let data: &[u8] = &[
-            0x00,                   // Object start
+            0x00, // Object start
             b'o', b'u', b't', b'e', b'r', 0x00, // Key "outer"
-            0x00,                   // Nested object start
+            0x00, // Nested object start
             b'i', b'n', b'n', b'e', b'r', 0x00, // Key "inner"
-            0x01,                   // String type
+            0x01, // String type
             b'k', b'e', b'y', 0x00, // Key "key"
             b'v', b'a', b'l', b'u', b'e', 0x00, // Value "value"
-            0x08,                   // End inner object
-            0x08,                   // End outer object
+            0x08, // End inner object
+            0x08, // End outer object
         ];
 
         let result = parse_shortcuts(data);
@@ -546,12 +546,12 @@ mod tests {
     fn test_parse_int32_value() {
         // Int32 value: "root" { "number" "42" }
         let data: &[u8] = &[
-            0x00,                   // Object start
+            0x00, // Object start
             b'r', b'o', b'o', b't', 0x00, // Key "root"
-            0x02,                   // Int32 type
+            0x02, // Int32 type
             b'n', b'u', b'm', b'b', b'e', b'r', 0x00, // Key "number"
-            42, 0, 0, 0,            // Value 42 (little-endian)
-            0x08,                   // Object end
+            42, 0, 0, 0,    // Value 42 (little-endian)
+            0x08, // Object end
         ];
 
         let result = parse_shortcuts(data);
