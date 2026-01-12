@@ -9,5 +9,6 @@ keywords = ["vdf", "steam", "parser", "binary", "valve"]
 categories = ["parser-implementations", "data-structures"]
 
 [dependencies]
-hex = "0.4.3"
-winnow = { version = "0.7.14", features = ["simd"] }
+hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
+winnow = { version = "0.7.14", default-features = false, features = ["alloc", "simd"] }
+hashbrown = "0.15"

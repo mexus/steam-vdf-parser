@@ -6,11 +6,11 @@ Supports both text and binary formats used by Steam, including `shortcuts.vdf`, 
 
 ## Features
 
+- **`no_std` compatible** — works without the standard library, requires only `alloc`
 - **Zero-copy parsing** — text format returns borrowed strings when possible (no escape sequences)
 - **Binary format support** — parses all Steam binary VDF variants
 - **Version-aware** — handles `appinfo.vdf` v40 (null-terminated keys) and v41 (string table)
 - **`serde`-free** — simple, direct data structures with no hidden allocations
-- **No dependencies** — only `winnow` (parsing) and `hex` (packageinfo SHA1 display)
 
 ## Usage
 
@@ -42,7 +42,7 @@ assert_eq!(value, "value");
 ```rust
 use steam_vdf_parser::parse_binary;
 
-let data = std::fs::read("shortcuts.vdf")?;
+let data = read_vdf_data_somehow()?;
 let vdf = parse_binary(&data)?;
 
 // For data that needs to outlive the input:
@@ -55,22 +55,30 @@ let owned = vdf.into_owned();
 use steam_vdf_parser::{parse_appinfo, parse_packageinfo};
 
 // appinfo.vdf (auto-detects v40/v41)
-let data = std::fs::read("appinfo.vdf")?;
+let data = read_vdf_data_somehow()?;
 let vdf = parse_appinfo(&data)?;
 
 // packageinfo.vdf
-let data = std::fs::read("packageinfo.vdf")?;
+let data = read_vdf_data_somehow()?;
 let vdf = parse_packageinfo(&data)?;
 ```
 
-### Convenience Functions
+## `no_std` Support
+
+This library is `no_std` compatible and only requires the `alloc` crate. Enable it in your `Cargo.toml`:
+
+```toml
+[dependencies]
+steam-vdf-parser = "0.1"
+```
+
+For `no_std` environments, make sure to have a global allocator configured:
 
 ```rust
-use steam_vdf_parser::{parse_text_file, parse_binary_file};
+extern crate alloc;
+use steam_vdf_parser::parse_text;
 
-// Reads file and returns owned Vdf<'static>
-let vdf = parse_text_file("steamapps/appinfo.vdf")?;
-let vdf = parse_binary_file("steamapps/packageinfo.vdf")?;
+// Your parsing code here
 ```
 
 ## Data Structures
@@ -89,7 +97,7 @@ let vdf = parse_binary_file("steamapps/packageinfo.vdf")?;
 
 ### `Obj<'text>`
 
-A `HashMap`-backed object with O(1) lookup:
+A `HashMap`-backed object (using `hashbrown` for `no_std` compatibility) with O(1) lookup:
 
 ```rust
 let obj = vdf.as_obj().unwrap();

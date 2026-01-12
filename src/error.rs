@@ -1,9 +1,12 @@
 //! Error types for VDF parsing.
 
-use std::fmt;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 
 /// Result type for VDF operations.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Create a parse error with truncated input snippet (max 50 chars).
 ///
@@ -90,12 +93,6 @@ pub enum Error {
         /// Context describing what was expected.
         context: String,
     },
-
-    /// IO errors
-    /// ---------
-
-    /// An error from the underlying IO operation.
-    IoError(std::io::Error),
 }
 
 impl fmt::Display for Error {
@@ -169,21 +166,11 @@ impl fmt::Display for Error {
                     offset, context, snippet
                 )
             }
-            Error::IoError(err) => {
-                write!(f, "IO error: {}", err)
-            }
         }
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::IoError(err) => Some(err),
-            _ => None,
-        }
-    }
-}
+impl core::error::Error for Error {}
 
 impl Error {
     /// Adjusts the offset in error variants that contain position information.
@@ -198,7 +185,7 @@ impl Error {
             Error::UnknownType { offset, .. } => *offset += base,
             Error::ParseError { offset, .. } => *offset += base,
             // Other variants don't have offsets to adjust
-            Error::InvalidMagic { .. } | Error::InvalidStringIndex { .. } | Error::IoError(_) => {}
+            Error::InvalidMagic { .. } | Error::InvalidStringIndex { .. } => {}
         }
         self
     }
@@ -220,7 +207,8 @@ pub fn with_offset(base: usize) -> impl Fn(Error) -> Error {
 mod tests {
     use super::*;
     use crate::binary::{APPINFO_MAGIC_40, APPINFO_MAGIC_41};
-    use std::error::Error as StdError;
+    use alloc::format;
+    use alloc::string::ToString;
 
     #[test]
     fn test_error_display_invalid_magic() {
@@ -397,20 +385,6 @@ mod tests {
             }
             _ => panic!("Unexpected error type"),
         }
-    }
-
-    #[test]
-    fn test_error_io_error_source() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
-        let err = Error::IoError(io_err);
-        assert!(err.source().is_some());
-        assert!(err.source().unwrap().to_string().contains("not found"));
-    }
-
-    #[test]
-    fn test_error_other_variants_no_source() {
-        let err = Error::InvalidUtf8 { offset: 0 };
-        assert!(err.source().is_none());
     }
 
     #[test]

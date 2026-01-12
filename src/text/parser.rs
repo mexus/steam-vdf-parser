@@ -1,6 +1,7 @@
 //! Text VDF parser powered by winnow.
 
-use std::borrow::Cow;
+use alloc::borrow::Cow;
+use alloc::string::String;
 
 use winnow::ascii::{line_ending, multispace1};
 use winnow::combinator::{alt, delimited, preceded, repeat};
@@ -217,6 +218,7 @@ fn line_comment(input: &mut &str) -> ModalResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
 
     #[test]
     fn test_parse_simple_kv() {

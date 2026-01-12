@@ -4,7 +4,11 @@
 //! - shortcuts.vdf (simple binary format)
 //! - appinfo.vdf (with optional string table)
 
-use std::borrow::Cow;
+use alloc::borrow::Cow;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::str;
 
 use crate::binary::byte_reader::{read_u32_le, read_u64_le};
 use crate::binary::types::{
@@ -564,7 +568,7 @@ fn parse_null_terminated_string_borrowed(input: &[u8]) -> Result<(&[u8], &str)> 
         })?;
 
     let bytes = &input[..null_pos];
-    let string = std::str::from_utf8(bytes).map_err(|e| Error::InvalidUtf8 {
+    let string = core::str::from_utf8(bytes).map_err(|e| Error::InvalidUtf8 {
         offset: e.valid_up_to(),
     })?;
 
@@ -600,7 +604,7 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
         .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]));
 
     // Decode UTF-16 to char and then to String
-    let string: String = std::char::decode_utf16(utf16_units)
+    let string: String = char::decode_utf16(utf16_units)
         .enumerate()
         .map(|(pos, r)| {
             r.map_err(|_| Error::InvalidUtf16 {
@@ -608,7 +612,7 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
                 position: pos,
             })
         })
-        .collect::<std::result::Result<_, _>>()?;
+        .collect::<core::result::Result<_, _>>()?;
 
     Ok((&input[i + 2..], string))
 }
@@ -1243,7 +1247,11 @@ mod tests {
             0xFF, 0xFF, 0xFF, 0xFF, // package_id = 0xFFFFFFFF (terminator)
         ];
         let result = parse_packageinfo(data);
-        assert!(result.is_ok(), "parse_packageinfo failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "parse_packageinfo failed: {:?}",
+            result.err()
+        );
         let vdf = result.unwrap();
         assert_eq!(vdf.key, "packageinfo_universe_1");
         let obj = vdf.as_obj().unwrap();
@@ -1259,7 +1267,11 @@ mod tests {
             0xFF, 0xFF, 0xFF, 0xFF, // package_id = 0xFFFFFFFF (terminator)
         ];
         let result = parse_packageinfo(data);
-        assert!(result.is_ok(), "parse_packageinfo failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "parse_packageinfo failed: {:?}",
+            result.err()
+        );
         let vdf = result.unwrap();
         assert_eq!(vdf.key, "packageinfo_universe_1");
         let obj = vdf.as_obj().unwrap();
@@ -1292,8 +1304,8 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, // universe
             0x01, 0x00, 0x00, 0x00, // package_id = 1
             // Only hash (20 bytes), missing change_number and token
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x01, 0x02, 0x03, 0x04,
+            0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
         ];
         assert!(matches!(
             parse_packageinfo(data),
@@ -1310,26 +1322,35 @@ mod tests {
             // Package entry
             0x01, 0x00, 0x00, 0x00, // package_id = 1
             // SHA-1 hash (20 bytes)
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x2A, 0x00, 0x00, 0x00, // change_number = 42
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x00, 0x00, 0x00, // change_number = 42
             // VDF: simple object with one string entry { "k": "value" }
-            0x01,                                      // String type
-            b'k', 0x00,                                // Key "k"
-            b'v', b'a', b'l', b'u', b'e', 0x00,        // Value "value"
-            0x08,                                      // Object end
+            0x01, // String type
+            b'k', 0x00, // Key "k"
+            b'v', b'a', b'l', b'u', b'e', 0x00, // Value "value"
+            0x08, // Object end
             // Termination marker
             0xFF, 0xFF, 0xFF, 0xFF,
         ];
         let result = parse_packageinfo(data);
-        assert!(result.is_ok(), "parse_packageinfo failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "parse_packageinfo failed: {:?}",
+            result.err()
+        );
         let vdf = result.unwrap();
         assert_eq!(vdf.key, "packageinfo_universe_0");
 
         let obj = vdf.as_obj().unwrap();
         assert_eq!(obj.len(), 1);
         let package = obj.get("1").and_then(|v| v.as_obj()).unwrap();
-        assert_eq!(package.get("k").and_then(|v| v.as_str()).map(|s| s.as_ref()), Some("value"));
+        assert_eq!(
+            package
+                .get("k")
+                .and_then(|v| v.as_str())
+                .map(|s| s.as_ref()),
+            Some("value")
+        );
     }
 
     #[test]
@@ -1341,21 +1362,24 @@ mod tests {
             // Package entry
             0x01, 0x00, 0x00, 0x00, // package_id = 1
             // SHA-1 hash (20 bytes)
-            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33,
-            0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
-            0x2A, 0x00, 0x00, 0x00, // change_number = 42
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0x2A, 0x00, 0x00, 0x00, // change_number = 42
             // PICS token (8 bytes)
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
             // VDF: simple object with one int32 entry { "x": 5 }
-            0x02,           // Int32 type
-            b'x', 0x00,     // Key "x"
-            0x05, 0x00, 0x00, 0x00,  // Value 5
-            0x08,           // Object end
+            0x02, // Int32 type
+            b'x', 0x00, // Key "x"
+            0x05, 0x00, 0x00, 0x00, // Value 5
+            0x08, // Object end
             // Termination marker
             0xFF, 0xFF, 0xFF, 0xFF,
         ];
         let result = parse_packageinfo(data);
-        assert!(result.is_ok(), "parse_packageinfo failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "parse_packageinfo failed: {:?}",
+            result.err()
+        );
         let vdf = result.unwrap();
         assert_eq!(vdf.key, "packageinfo_universe_0");
 
@@ -1373,23 +1397,25 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, // universe = 0
             // First package
             0x01, 0x00, 0x00, 0x00, // package_id = 1
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // hash
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // hash
             0x01, 0x00, 0x00, 0x00, // change_number = 1
             // VDF: { "x": 1 }
-            0x02, 0x01, 0x00, 0x00, 0x00, b'x', 0x00, 0x08,
-            // Second package
+            0x02, 0x01, 0x00, 0x00, 0x00, b'x', 0x00, 0x08, // Second package
             0x02, 0x00, 0x00, 0x00, // package_id = 2
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // hash
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // hash
             0x02, 0x00, 0x00, 0x00, // change_number = 2
             // VDF: { "a": 2 }
-            0x02, 0x02, 0x00, 0x00, 0x00, b'a', 0x00, 0x08,
-            // Termination marker
+            0x02, 0x02, 0x00, 0x00, 0x00, b'a', 0x00, 0x08, // Termination marker
             0xFF, 0xFF, 0xFF, 0xFF,
         ];
         let result = parse_packageinfo(data);
-        assert!(result.is_ok(), "parse_packageinfo failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "parse_packageinfo failed: {:?}",
+            result.err()
+        );
         let vdf = result.unwrap();
         let obj = vdf.as_obj().unwrap();
         assert_eq!(obj.len(), 2);

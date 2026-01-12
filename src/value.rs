@@ -1,8 +1,8 @@
 //! Core data structures for VDF representation.
 
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::fmt;
+use alloc::borrow::Cow;
+use core::fmt;
+use hashbrown::HashMap;
 
 /// A key in VDF - zero-copy when possible
 pub type Key<'text> = Cow<'text, str>;
@@ -232,7 +232,8 @@ impl<'text> fmt::Display for Vdf<'text> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::borrow::Cow;
+    use alloc::format;
+    use alloc::string::ToString;
 
     #[test]
     fn test_value_is_methods() {
