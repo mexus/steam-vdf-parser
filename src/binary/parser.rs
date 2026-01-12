@@ -800,9 +800,7 @@ pub fn parse_packageinfo(input: &[u8]) -> Result<Vdf<'_>> {
         );
 
         // Find the end of this VDF object to move to the next entry
-        // The VDF object is parsed starting with 0x00 and ending at the matching 0x08
-        let (_vdf_rest, _) =
-            parse_object(vdf_data, &config).map_err(with_offset(input.len() - vdf_data.len()))?;
+        // _vdf_rest from the first parse_object call above tells us where VDF data ended
         let vdf_end = vdf_data.len() - _vdf_rest.len();
         rest = &rest[vdf_data_offset + vdf_end..];
     }
@@ -1189,5 +1187,232 @@ mod tests {
         ];
         let result = parse(data);
         assert!(result.is_ok());
+    }
+
+    // ===== packageinfo tests =====
+
+    #[test]
+    fn test_parse_packageinfo_v39_invalid_magic_base() {
+        // Correct version (39 = 0x27) but wrong magic base
+        let data: &[u8] = &[
+            0x27, 0xBE, 0xBA, 0xFE, // Wrong magic base (0xFEBAFE instead of 0x065655)
+            0x00, 0x00, 0x00, 0x00, // universe
+        ];
+        assert!(matches!(
+            parse_packageinfo(data),
+            Err(Error::InvalidMagic { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_packageinfo_invalid_version() {
+        // Correct magic base but wrong version (38 instead of 39/40)
+        // 0x06565526 = version 38
+        let data: &[u8] = &[
+            0x26, 0x55, 0x56, 0x06, // magic with version 38
+            0x00, 0x00, 0x00, 0x00, // universe
+        ];
+        assert!(matches!(
+            parse_packageinfo(data),
+            Err(Error::InvalidMagic { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_packageinfo_v39_truncated_universe() {
+        // v39 magic but missing universe bytes
+        let data: &[u8] = &[
+            0x27, 0x55, 0x56, 0x06, // PACKAGEINFO_MAGIC_39
+            0x00, 0x00, // incomplete universe (only 2 bytes)
+        ];
+        assert!(matches!(
+            parse_packageinfo(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_packageinfo_v39_with_terminator() {
+        // v39 format with immediate termination marker (no packages)
+        let data: &[u8] = &[
+            0x27, 0x55, 0x56, 0x06, // PACKAGEINFO_MAGIC_39 (v39)
+            0x01, 0x00, 0x00, 0x00, // universe = 1
+            0xFF, 0xFF, 0xFF, 0xFF, // package_id = 0xFFFFFFFF (terminator)
+        ];
+        let result = parse_packageinfo(data);
+        assert!(result.is_ok(), "parse_packageinfo failed: {:?}", result.err());
+        let vdf = result.unwrap();
+        assert_eq!(vdf.key, "packageinfo_universe_1");
+        let obj = vdf.as_obj().unwrap();
+        assert_eq!(obj.len(), 0, "Should have no packages");
+    }
+
+    #[test]
+    fn test_parse_packageinfo_v40_with_terminator() {
+        // v40 format with immediate termination marker (no packages)
+        let data: &[u8] = &[
+            0x28, 0x55, 0x56, 0x06, // PACKAGEINFO_MAGIC_40 (v40)
+            0x01, 0x00, 0x00, 0x00, // universe = 1
+            0xFF, 0xFF, 0xFF, 0xFF, // package_id = 0xFFFFFFFF (terminator)
+        ];
+        let result = parse_packageinfo(data);
+        assert!(result.is_ok(), "parse_packageinfo failed: {:?}", result.err());
+        let vdf = result.unwrap();
+        assert_eq!(vdf.key, "packageinfo_universe_1");
+        let obj = vdf.as_obj().unwrap();
+        assert_eq!(obj.len(), 0, "Should have no packages");
+    }
+
+    #[test]
+    fn test_parse_packageinfo_v39_truncated_entry_header() {
+        // v39 format with package_id but incomplete header
+        // Header size for v39 is 4 + 20 + 4 = 28 bytes (package_id + hash + change_number)
+        let data: &[u8] = &[
+            0x27, 0x55, 0x56, 0x06, // PACKAGEINFO_MAGIC_39
+            0x00, 0x00, 0x00, 0x00, // universe
+            0x01, 0x00, 0x00, 0x00, // package_id = 1
+            // Only 10 bytes of hash (need 20), missing change_number
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
+        ];
+        assert!(matches!(
+            parse_packageinfo(data),
+            Err(Error::UnexpectedEndOfInput { context, .. }) if context == "reading package entry header"
+        ));
+    }
+
+    #[test]
+    fn test_parse_packageinfo_v40_truncated_entry_header() {
+        // v40 format with package_id but incomplete header
+        // Header size for v40 is 4 + 20 + 4 + 8 = 36 bytes (+ token)
+        let data: &[u8] = &[
+            0x28, 0x55, 0x56, 0x06, // PACKAGEINFO_MAGIC_40
+            0x00, 0x00, 0x00, 0x00, // universe
+            0x01, 0x00, 0x00, 0x00, // package_id = 1
+            // Only hash (20 bytes), missing change_number and token
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
+        ];
+        assert!(matches!(
+            parse_packageinfo(data),
+            Err(Error::UnexpectedEndOfInput { context, .. }) if context == "reading package entry header"
+        ));
+    }
+
+    #[test]
+    fn test_parse_packageinfo_v39_with_minimal_vdf() {
+        // v39 format with minimal VDF that tests basic parsing
+        let data: &[u8] = &[
+            0x27, 0x55, 0x56, 0x06, // PACKAGEINFO_MAGIC_39
+            0x00, 0x00, 0x00, 0x00, // universe = 0
+            // Package entry
+            0x01, 0x00, 0x00, 0x00, // package_id = 1
+            // SHA-1 hash (20 bytes)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x2A, 0x00, 0x00, 0x00, // change_number = 42
+            // VDF: simple object with one string entry { "k": "value" }
+            0x01,                                      // String type
+            b'k', 0x00,                                // Key "k"
+            b'v', b'a', b'l', b'u', b'e', 0x00,        // Value "value"
+            0x08,                                      // Object end
+            // Termination marker
+            0xFF, 0xFF, 0xFF, 0xFF,
+        ];
+        let result = parse_packageinfo(data);
+        assert!(result.is_ok(), "parse_packageinfo failed: {:?}", result.err());
+        let vdf = result.unwrap();
+        assert_eq!(vdf.key, "packageinfo_universe_0");
+
+        let obj = vdf.as_obj().unwrap();
+        assert_eq!(obj.len(), 1);
+        let package = obj.get("1").and_then(|v| v.as_obj()).unwrap();
+        assert_eq!(package.get("k").and_then(|v| v.as_str()).map(|s| s.as_ref()), Some("value"));
+    }
+
+    #[test]
+    fn test_parse_packageinfo_v40_with_minimal_vdf() {
+        // v40 format with minimal VDF
+        let data: &[u8] = &[
+            0x28, 0x55, 0x56, 0x06, // PACKAGEINFO_MAGIC_40
+            0x00, 0x00, 0x00, 0x00, // universe = 0
+            // Package entry
+            0x01, 0x00, 0x00, 0x00, // package_id = 1
+            // SHA-1 hash (20 bytes)
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33,
+            0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+            0x2A, 0x00, 0x00, 0x00, // change_number = 42
+            // PICS token (8 bytes)
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            // VDF: simple object with one int32 entry { "x": 5 }
+            0x02,           // Int32 type
+            b'x', 0x00,     // Key "x"
+            0x05, 0x00, 0x00, 0x00,  // Value 5
+            0x08,           // Object end
+            // Termination marker
+            0xFF, 0xFF, 0xFF, 0xFF,
+        ];
+        let result = parse_packageinfo(data);
+        assert!(result.is_ok(), "parse_packageinfo failed: {:?}", result.err());
+        let vdf = result.unwrap();
+        assert_eq!(vdf.key, "packageinfo_universe_0");
+
+        let obj = vdf.as_obj().unwrap();
+        assert_eq!(obj.len(), 1);
+        let package = obj.get("1").and_then(|v| v.as_obj()).unwrap();
+        assert_eq!(package.get("x").and_then(|v| v.as_i32()), Some(5));
+    }
+
+    #[test]
+    fn test_parse_packageinfo_multiple_packages() {
+        // v39 format with multiple packages
+        let data: &[u8] = &[
+            0x27, 0x55, 0x56, 0x06, // PACKAGEINFO_MAGIC_39
+            0x00, 0x00, 0x00, 0x00, // universe = 0
+            // First package
+            0x01, 0x00, 0x00, 0x00, // package_id = 1
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // hash
+            0x01, 0x00, 0x00, 0x00, // change_number = 1
+            // VDF: { "x": 1 }
+            0x02, 0x01, 0x00, 0x00, 0x00, b'x', 0x00, 0x08,
+            // Second package
+            0x02, 0x00, 0x00, 0x00, // package_id = 2
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // hash
+            0x02, 0x00, 0x00, 0x00, // change_number = 2
+            // VDF: { "a": 2 }
+            0x02, 0x02, 0x00, 0x00, 0x00, b'a', 0x00, 0x08,
+            // Termination marker
+            0xFF, 0xFF, 0xFF, 0xFF,
+        ];
+        let result = parse_packageinfo(data);
+        assert!(result.is_ok(), "parse_packageinfo failed: {:?}", result.err());
+        let vdf = result.unwrap();
+        let obj = vdf.as_obj().unwrap();
+        assert_eq!(obj.len(), 2);
+        assert!(obj.get("1").is_some());
+        assert!(obj.get("2").is_some());
+    }
+
+    #[test]
+    fn test_parse_packageinfo_empty_input() {
+        // Completely empty input
+        let data: &[u8] = &[];
+        assert!(matches!(
+            parse_packageinfo(data),
+            Err(Error::UnexpectedEndOfInput { context, .. }) if context == "reading packageinfo header"
+        ));
+    }
+
+    #[test]
+    fn test_parse_packageinfo_only_magic() {
+        // Only magic bytes, no universe
+        let data: &[u8] = &[
+            0x27, 0x55, 0x56, 0x06, // PACKAGEINFO_MAGIC_39
+        ];
+        assert!(matches!(
+            parse_packageinfo(data),
+            Err(Error::UnexpectedEndOfInput { .. })
+        ));
     }
 }
