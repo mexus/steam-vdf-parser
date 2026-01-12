@@ -108,13 +108,16 @@ impl<'a> KeyMode<'a, '_> {
 /// For shortcuts format, returns zero-copy data borrowed from input.
 /// For appinfo format, returns mixed data: root key and app ID keys are owned,
 /// but actual parsed values (including string table entries) are borrowed.
+/// For packageinfo format, returns mixed data similar to appinfo.
 pub fn parse(input: &[u8]) -> Result<Vdf<'_>> {
-    // Check if this looks like appinfo format (starts with magic)
-    if let Some(magic) = read_u32_le(input)
-        && (magic == APPINFO_MAGIC_40 || magic == APPINFO_MAGIC_41)
-    {
-        // parse_appinfo returns Vdf<'static>, which is compatible with Vdf<'_>
-        return parse_appinfo(input);
+    // Check if this looks like appinfo or packageinfo format (starts with magic)
+    if let Some(magic) = read_u32_le(input) {
+        if magic == APPINFO_MAGIC_40 || magic == APPINFO_MAGIC_41 {
+            return parse_appinfo(input);
+        }
+        if magic == PACKAGEINFO_MAGIC_39 || magic == PACKAGEINFO_MAGIC_40 {
+            return parse_packageinfo(input);
+        }
     }
 
     // Otherwise, parse as shortcuts format (zero-copy)
