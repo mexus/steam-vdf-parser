@@ -8,6 +8,8 @@ description = "Zero-copy parser for Steam's VDF (Valve Data Format) files"
 readme = "README.md"
 keywords = ["vdf", "steam", "parser", "binary", "valve"]
 categories = ["parser-implementations", "data-structures"]
+repository = "https://github.com/mexus/steam-vdf-parser"
+documentation = "https://docs.rs/steam-vdf-parser"
 
 [dependencies]
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }

@@ -1,5 +1,10 @@
 # steam-vdf-parser
 
+[![Crates.io](https://img.shields.io/crates/v/steam-vdf-parser.svg)](https://crates.io/crates/steam-vdf-parser)
+[![Documentation](https://docs.rs/steam-vdf-parser/badge.svg)](https://docs.rs/steam-vdf-parser)
+[![License](https://img.shields.io/crates/l/steam-vdf-parser.svg)](https://github.com/mexus/steam-vdf-parser#license)
+[![CI](https://github.com/mexus/steam-vdf-parser/actions/workflows/ci.yml/badge.svg)](https://github.com/mexus/steam-vdf-parser/actions/workflows/ci.yml)
+
 A blazing fast, zero-copy parser for Steam's VDF (Valve Data Format) files in Rust.
 
 Supports both text and binary formats used by Steam, including `shortcuts.vdf`, `appinfo.vdf`, and `packageinfo.vdf`.
