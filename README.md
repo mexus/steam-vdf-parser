@@ -29,12 +29,16 @@ let input = r#""root"
 }"#;
 
 let vdf = parse_text(input)?;
-assert_eq!(vdf.key, "root");
+assert_eq!(vdf.key(), "root");
 
 // Access nested values
 let obj = vdf.as_obj().unwrap();
 let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
 assert_eq!(value, "value");
+
+// Path-based access
+let subvalue = vdf.get_str(&["nested", "subkey"]).unwrap();
+assert_eq!(subvalue, "subvalue");
 ```
 
 ### Binary Format (auto-detect)
@@ -83,17 +87,56 @@ use steam_vdf_parser::parse_text;
 
 ## Data Structures
 
+### `Vdf<'text>`
+
+The top-level VDF document. A VDF document is essentially a single key-value pair at the root level.
+
+```rust
+let vdf = parse_text(input)?;
+
+// Access root key and value
+let key: &str = vdf.key();
+let value: &Value = vdf.value();
+
+// Check if root is an object
+if vdf.is_obj() {
+    let obj = vdf.as_obj().unwrap();
+}
+
+// Direct nested access
+let nested = vdf.get("key");  // Option<&Value>
+
+// Path-based traversal
+let deep = vdf.get_path(&["nested", "deep", "value"]);
+let name = vdf.get_str(&["config", "name"]);
+let count = vdf.get_i32(&["settings", "count"]);
+```
+
 ### `Value<'text>` Enum
 
-| Variant | Rust Type | Accessor |
-|---------|-----------|----------|
-| `Str` | `Cow<'text, str>` | `as_str()` |
-| `Obj` | `Obj<'text>` | `as_obj()` |
-| `I32` | `i32` | `as_i32()` |
-| `U64` | `u64` | `as_u64()` |
-| `Float` | `f32` | `as_float()` |
-| `Pointer` | `u32` | `as_pointer()` |
-| `Color` | `[u8; 4]` | `as_color()` |
+| Variant | Rust Type | Type Check | Accessor |
+|---------|-----------|------------|----------|
+| `Str` | `Cow<'text, str>` | `is_str()` | `as_str()` |
+| `Obj` | `Obj<'text>` | `is_obj()` | `as_obj()`, `as_obj_mut()` |
+| `I32` | `i32` | `is_i32()` | `as_i32()` |
+| `U64` | `u64` | `is_u64()` | `as_u64()` |
+| `Float` | `f32` | `is_float()` | `as_float()` |
+| `Pointer` | `u32` | `is_pointer()` | `as_pointer()` |
+| `Color` | `[u8; 4]` | `is_color()` | `as_color()` |
+
+Path-based access methods are also available on `Value`:
+
+```rust
+// Traverse nested objects
+let deep = value.get_path(&["nested", "key"]);
+
+// Typed path access
+let name = value.get_str(&["config", "name"]);
+let obj = value.get_obj(&["settings"]);
+let count = value.get_i32(&["stats", "count"]);
+let id = value.get_u64(&["user", "id"]);
+let ratio = value.get_float(&["metrics", "ratio"]);
+```
 
 ### `Obj<'text>`
 
@@ -101,14 +144,29 @@ A `HashMap`-backed object (using `hashbrown` for `no_std` compatibility) with O(
 
 ```rust
 let obj = vdf.as_obj().unwrap();
+
+// Basic access
 let len = obj.len();
 let is_empty = obj.is_empty();
-let value = obj.get("key");  // Option<&Value>
+let value = obj.get("key");           // Option<&Value>
+let exists = obj.contains_key("key"); // bool
 
-// Iterate
+// Iteration
 for (key, value) in obj.iter() {
     println!("{}: {}", key, value);
 }
+for key in obj.keys() {
+    println!("Key: {}", key);
+}
+for value in obj.values() {
+    println!("Value: {}", value);
+}
+
+// Mutation
+let mut obj = Obj::new();
+obj.insert("key", Value::Str("value".into()));
+obj.get_mut("key");  // Option<&mut Value>
+obj.remove("key");   // Option<Value>
 ```
 
 ### Lifetime and Ownership
