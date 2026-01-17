@@ -39,9 +39,9 @@ fn test_value_from_u64() {
 
 #[test]
 fn test_value_from_f32() {
-    let value: Value = 3.14f32.into();
+    let value: Value = 2.5f32.into();
     assert!(value.is_float());
-    assert_eq!(value.as_float(), Some(3.14));
+    assert_eq!(value.as_float(), Some(2.5));
 }
 
 #[test]
@@ -458,10 +458,10 @@ fn test_value_get_u64() {
 #[test]
 fn test_value_get_float() {
     let mut obj = Obj::new();
-    obj.insert(Cow::Borrowed("pi"), Value::Float(3.14));
+    obj.insert(Cow::Borrowed("ratio"), Value::Float(2.5));
     let value = Value::Obj(obj);
 
-    assert_eq!(value.get_float(&["pi"]), Some(3.14));
+    assert_eq!(value.get_float(&["ratio"]), Some(2.5));
 }
 
 // Tests for Vdf delegation methods

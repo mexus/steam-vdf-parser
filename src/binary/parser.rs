@@ -843,7 +843,7 @@ mod tests {
 
         let test_obj = test_obj.unwrap();
         let value = test_obj.get("key").and_then(|v| v.as_str());
-        assert_eq!(value.map(|s| s.as_ref()), Some("value"));
+        assert_eq!(value, Some("value"));
     }
 
     #[test]
@@ -869,7 +869,7 @@ mod tests {
         let outer = obj.get("outer").and_then(|v| v.as_obj()).unwrap();
         let inner = outer.get("inner").and_then(|v| v.as_obj()).unwrap();
         let value = inner.get("key").and_then(|v| v.as_str());
-        assert_eq!(value.map(|s| s.as_ref()), Some("value"));
+        assert_eq!(value, Some("value"));
     }
 
     #[test]
@@ -1341,13 +1341,7 @@ mod tests {
         let obj = vdf.as_obj().unwrap();
         assert_eq!(obj.len(), 1);
         let package = obj.get("1").and_then(|v| v.as_obj()).unwrap();
-        assert_eq!(
-            package
-                .get("k")
-                .and_then(|v| v.as_str())
-                .map(|s| s.as_ref()),
-            Some("value")
-        );
+        assert_eq!(package.get("k").and_then(|v| v.as_str()), Some("value"));
     }
 
     #[test]
