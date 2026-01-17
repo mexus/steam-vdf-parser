@@ -11,7 +11,7 @@ fn main() {
         Ok(content) => match parse_text(&content) {
             Ok(vdf) => {
                 println!("Success!");
-                println!("Root key: {}", vdf.key);
+                println!("Root key: {}", vdf.key());
                 let obj = vdf.as_obj().unwrap();
                 println!("Root has {} keys", obj.len());
             }
@@ -28,7 +28,7 @@ fn main() {
         Ok(data) => match parse_binary(&data) {
             Ok(vdf) => {
                 println!("Success!");
-                println!("Root key: {}", vdf.key);
+                println!("Root key: {}", vdf.key());
                 let obj = vdf.as_obj().unwrap();
                 println!("Root has {} keys", obj.len());
             }

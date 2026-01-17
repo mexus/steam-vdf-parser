@@ -26,7 +26,7 @@ fn main() {
     match parse_appinfo(&data) {
         Ok(vdf) => {
             println!("Successfully parsed {}", path);
-            println!("Root key: {}", vdf.key);
+            println!("Root key: {}", vdf.key());
             if let Some(obj) = vdf.as_obj() {
                 println!("Number of apps: {}", obj.len());
                 for (key, _) in obj.iter().take(5) {

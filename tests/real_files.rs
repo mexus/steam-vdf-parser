@@ -1,8 +1,7 @@
 //! Integration tests against real Steam VDF files.
 
 use std::path::Path;
-use steam_vdf_parser::binary;
-use steam_vdf_parser::{parse_binary, parse_text};
+use steam_vdf_parser::{parse_binary, parse_packageinfo, parse_text};
 
 #[test]
 fn test_parse_real_localconfig_text() {
@@ -17,7 +16,7 @@ fn test_parse_real_localconfig_text() {
     );
 
     let vdf = result.unwrap();
-    assert_eq!(vdf.key, "UserLocalConfigStore");
+    assert_eq!(vdf.key(), "UserLocalConfigStore");
 
     let obj = vdf.as_obj().expect("Root should be an object");
     assert!(!obj.is_empty(), "Root should have keys");
@@ -40,7 +39,7 @@ fn test_parse_real_appinfo_binary() {
     );
 
     let vdf = result.unwrap();
-    assert!(vdf.key.starts_with("appinfo_universe_"));
+    assert!(vdf.key().starts_with("appinfo_universe_"));
 
     let obj = vdf.as_obj().expect("Root should be an object");
     assert!(!obj.is_empty(), "Root should have keys");
@@ -58,7 +57,7 @@ fn test_parse_real_packageinfo_binary() {
     let path = Path::new("tests/fixtures/packageinfo.vdf");
     let data = std::fs::read(path).expect("Failed to read packageinfo.vdf");
 
-    let result = binary::parse_packageinfo(&data);
+    let result = parse_packageinfo(&data);
     assert!(
         result.is_ok(),
         "Failed to parse packageinfo.vdf: {:?}",
@@ -66,7 +65,7 @@ fn test_parse_real_packageinfo_binary() {
     );
 
     let vdf = result.unwrap();
-    assert!(vdf.key.starts_with("packageinfo_universe_"));
+    assert!(vdf.key().starts_with("packageinfo_universe_"));
 
     let obj = vdf.as_obj().expect("Root should be an object");
     assert!(!obj.is_empty(), "Root should have keys");

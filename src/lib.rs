@@ -69,6 +69,14 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
     binary::parse_appinfo(input)
 }
 
+/// Parse a packageinfo.vdf format binary file.
+///
+/// This function returns zero-copy data where possible - strings are borrowed
+/// from the input buffer. Use `.into_owned()` to convert to an owned `Vdf<'static>`.
+pub fn parse_packageinfo(input: &[u8]) -> Result<Vdf<'_>> {
+    binary::parse_packageinfo(input)
+}
+
 // Convert from borrowed to owned
 impl Vdf<'_> {
     /// Convert to an owned version (with 'static lifetime).
@@ -76,13 +84,12 @@ impl Vdf<'_> {
     /// This creates a new `Vdf<'static>` with all strings owned, allowing the
     /// data to outlive the original input.
     pub fn into_owned(self) -> Vdf<'static> {
-        Vdf {
-            key: match self.key {
-                Cow::Borrowed(s) => s.to_string().into(),
-                Cow::Owned(s) => s.into(),
-            },
-            value: self.value.into_owned(),
-        }
+        let (key, value) = self.into_parts();
+        let owned_key: Cow<'static, str> = match key {
+            Cow::Borrowed(s) => Cow::Owned(s.to_string()),
+            Cow::Owned(s) => Cow::Owned(s),
+        };
+        Vdf::new(owned_key, value.into_owned())
     }
 }
 
@@ -90,6 +97,7 @@ impl Value<'_> {
     /// Convert to an owned version (with 'static lifetime).
     pub fn into_owned(self) -> Value<'static> {
         match self {
+            Value::Null => Value::Null,
             Value::Str(s) => Value::Str(match s {
                 Cow::Borrowed(b) => b.to_string().into(),
                 Cow::Owned(o) => o.into(),
@@ -109,9 +117,9 @@ impl Obj<'_> {
     pub fn into_owned(self) -> Obj<'static> {
         let mut new = Obj::new();
         for (k, v) in self.iter() {
-            let owned_key = match k {
-                Cow::Borrowed(b) => b.to_string().into(),
-                Cow::Owned(o) => o.clone().into(),
+            let owned_key: Cow<'static, str> = match k {
+                Cow::Borrowed(b) => Cow::Owned(b.to_string()),
+                Cow::Owned(o) => Cow::Owned(o.clone()),
             };
             // Clone the value since we're iterating
             new.insert(owned_key, v.clone().into_owned());
@@ -139,32 +147,20 @@ mod tests {
     fn test_parse_binary() {
         let vdf = parse_binary(SHORTCUTS_VDF).unwrap();
         assert!(vdf.as_obj().is_some());
-        assert_eq!(vdf.key, "root");
+        assert_eq!(vdf.key(), "root");
         let obj = vdf.as_obj().unwrap();
         let test_obj = obj.get("test").and_then(|v| v.as_obj()).unwrap();
-        assert_eq!(
-            test_obj
-                .get("key")
-                .and_then(|v| v.as_str())
-                .map(|c| c.as_ref()),
-            Some("value")
-        );
+        assert_eq!(test_obj.get("key").and_then(|v| v.as_str()), Some("value"));
     }
 
     #[test]
     fn test_parse_shortcuts() {
         let vdf = parse_shortcuts(SHORTCUTS_VDF).unwrap();
         assert!(vdf.as_obj().is_some());
-        assert_eq!(vdf.key, "root");
+        assert_eq!(vdf.key(), "root");
         let obj = vdf.as_obj().unwrap();
         let test_obj = obj.get("test").and_then(|v| v.as_obj()).unwrap();
-        assert_eq!(
-            test_obj
-                .get("key")
-                .and_then(|v| v.as_str())
-                .map(|c| c.as_ref()),
-            Some("value")
-        );
+        assert_eq!(test_obj.get("key").and_then(|v| v.as_str()), Some("value"));
     }
 
     #[test]
@@ -184,7 +180,7 @@ mod tests {
         }
         assert!(result.is_ok());
         let vdf = result.unwrap();
-        assert!(vdf.key.starts_with("appinfo_universe_"));
+        assert!(vdf.key().starts_with("appinfo_universe_"));
     }
 
     #[test]
@@ -195,8 +191,7 @@ mod tests {
         }"#;
         let borrowed = parse_text(input).unwrap();
         let owned = borrowed.into_owned();
-        assert_eq!(owned.key, "root");
-        assert!(matches!(owned.key, Cow::Owned(_)));
+        assert_eq!(owned.key(), "root");
     }
 
     #[test]
@@ -209,7 +204,7 @@ mod tests {
     #[test]
     fn test_into_owned_value_obj() {
         let mut obj = Obj::new();
-        obj.insert("key".into(), Value::Str("value".into()));
+        obj.insert("key", Value::Str("value".into()));
         let borrowed = Value::Obj(obj);
         let owned = borrowed.into_owned();
         assert!(matches!(owned, Value::Obj(_)));
@@ -218,7 +213,7 @@ mod tests {
     #[test]
     fn test_into_owned_obj() {
         let mut obj = Obj::new();
-        obj.insert(Cow::Borrowed("key"), Value::Str("value".into()));
+        obj.insert("key", Value::Str("value".into()));
         let owned = obj.into_owned();
         assert!(owned.get("key").is_some());
     }

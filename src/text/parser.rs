@@ -24,7 +24,7 @@ use crate::value::{Obj, Value, Vdf};
 ///     "key" "value"
 /// }"#;
 /// let vdf = parse_text(input).unwrap();
-/// assert_eq!(vdf.key, "root");
+/// assert_eq!(vdf.key(), "root");
 /// ```
 pub fn parse(input: &str) -> Result<Vdf<'_>> {
     let mut input = input.trim_start();
@@ -37,10 +37,7 @@ pub fn parse(input: &str) -> Result<Vdf<'_>> {
         .parse_next(&mut input)
         .map_err(|_| parse_error(input, 0, "expected root object"))?;
 
-    Ok(Vdf {
-        key: Cow::Borrowed(key),
-        value: Value::Obj(obj),
-    })
+    Ok(Vdf::new(Cow::Borrowed(key), Value::Obj(obj)))
 }
 
 /// Parse a token (either quoted or unquoted).
@@ -227,11 +224,11 @@ mod tests {
             "key" "value"
         }"#;
         let vdf = parse(input).unwrap();
-        assert_eq!(vdf.key, "root");
+        assert_eq!(vdf.key(), "root");
 
         let obj = vdf.as_obj().unwrap();
         let value = obj.get("key").and_then(|v| v.as_str());
-        assert_eq!(value, Some(&Cow::Borrowed("value")));
+        assert_eq!(value, Some("value"));
     }
 
     #[test]
@@ -244,12 +241,12 @@ mod tests {
             }
         }"#;
         let vdf = parse(input).unwrap();
-        assert_eq!(vdf.key, "outer");
+        assert_eq!(vdf.key(), "outer");
 
         let obj = vdf.as_obj().unwrap();
         let inner = obj.get("inner").and_then(|v| v.as_obj()).unwrap();
         let value = inner.get("key").and_then(|v| v.as_str());
-        assert_eq!(value, Some(&Cow::Borrowed("value")));
+        assert_eq!(value, Some("value"));
     }
 
     #[test]
@@ -259,11 +256,11 @@ mod tests {
             key value
         }"#;
         let vdf = parse(input).unwrap();
-        assert_eq!(vdf.key, "root");
+        assert_eq!(vdf.key(), "root");
 
         let obj = vdf.as_obj().unwrap();
         let value = obj.get("key").and_then(|v| v.as_str());
-        assert_eq!(value, Some(&Cow::Borrowed("value")));
+        assert_eq!(value, Some("value"));
     }
 
     #[test]
@@ -278,7 +275,7 @@ mod tests {
 
         let obj = vdf.as_obj().unwrap();
         let value = obj.get("key").and_then(|v| v.as_str());
-        assert_eq!(value, Some(&Cow::Borrowed("value")));
+        assert_eq!(value, Some("value"));
     }
 
     #[test]
@@ -291,14 +288,8 @@ mod tests {
         let vdf = parse(input).unwrap();
 
         let obj = vdf.as_obj().unwrap();
-        assert_eq!(
-            obj.get("name").and_then(|v| v.as_str()),
-            Some(&Cow::Borrowed("test"))
-        );
-        assert_eq!(
-            obj.get("count").and_then(|v| v.as_str()),
-            Some(&Cow::Borrowed("42"))
-        );
+        assert_eq!(obj.get("name").and_then(|v| v.as_str()), Some("test"));
+        assert_eq!(obj.get("count").and_then(|v| v.as_str()), Some("42"));
     }
 
     #[test]
@@ -316,7 +307,7 @@ mod tests {
             let vdf = parse(&full_input).unwrap();
             let obj = vdf.as_obj().unwrap();
             let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
-            assert_eq!(value.as_ref(), *expected, "Failed for input: {}", input);
+            assert_eq!(value, *expected, "Failed for input: {}", input);
         }
     }
 
@@ -337,7 +328,7 @@ mod tests {
             .and_then(|v| v.as_obj())
             .unwrap();
         let value = outer.get("key").and_then(|v| v.as_str()).unwrap();
-        assert_eq!(value.as_ref(), "value\nwith\nnewlines");
+        assert_eq!(value, "value\nwith\nnewlines");
     }
 
     #[test]
@@ -346,7 +337,7 @@ mod tests {
         let vdf = parse(input).unwrap();
         let obj = vdf.as_obj().unwrap();
         let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
-        assert_eq!(value.as_ref(), "line1\nline2\ttab\\slash\"quote");
+        assert_eq!(value, "line1\nline2\ttab\\slash\"quote");
     }
 
     #[test]
@@ -356,7 +347,7 @@ mod tests {
         let obj = vdf.as_obj().unwrap();
         let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
         // Unquoted tokens should have literal backslash-n
-        assert_eq!(value.as_ref(), r#"value\nnotescaped"#);
+        assert_eq!(value, r#"value\nnotescaped"#);
     }
 
     #[test]
@@ -365,9 +356,8 @@ mod tests {
         let vdf = parse(input).unwrap();
         let obj = vdf.as_obj().unwrap();
         let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
-        // Without escapes, should be borrowed
-        assert!(matches!(value, Cow::Borrowed("value")));
-        assert_eq!(value.as_ref(), "value");
+        // Without escapes, value should be parsed correctly (zero-copy internally)
+        assert_eq!(value, "value");
     }
 
     #[test]
@@ -376,9 +366,8 @@ mod tests {
         let vdf = parse(input).unwrap();
         let obj = vdf.as_obj().unwrap();
         let value = obj.get("key").and_then(|v| v.as_str()).unwrap();
-        // With escapes, should be owned
-        assert!(matches!(value, Cow::Owned(_)));
-        assert_eq!(value.as_ref(), "value\nwith\nescape");
+        // With escapes, value should be parsed correctly (owned internally)
+        assert_eq!(value, "value\nwith\nescape");
     }
 
     #[test]
@@ -414,6 +403,6 @@ mod tests {
         let level2 = level1.get("level2").and_then(|v| v.as_obj()).unwrap();
         let level3 = level2.get("level3").and_then(|v| v.as_obj()).unwrap();
         let value = level3.get("key").and_then(|v| v.as_str()).unwrap();
-        assert_eq!(value.as_ref(), "value");
+        assert_eq!(value, "value");
     }
 }

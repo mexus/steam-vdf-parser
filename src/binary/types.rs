@@ -5,7 +5,11 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BinaryType {
-    /// Start of an object (none/string marker).
+    /// Nested object start marker.
+    ///
+    /// Named `None` to match Steam SDK's `TYPE_NONE`, which indicates a subsection
+    /// with child keys rather than a leaf value. In binary VDF, `0x00` followed by
+    /// a key name starts a new nested object that continues until `ObjectEnd` (0x08).
     None = 0x00,
     /// String value (null-terminated).
     String = 0x01,

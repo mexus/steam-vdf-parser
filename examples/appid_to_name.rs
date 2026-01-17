@@ -79,8 +79,7 @@ fn main() -> ExitCode {
             .and_then(|appinfo| appinfo.get("common"))
             .and_then(|common| common.as_obj())
             .and_then(|common| common.get("name"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.as_ref());
+            .and_then(|v| v.as_str());
 
         if let Some(name) = name {
             if let Ok(app_id) = app_id_str.parse::<u32>() {

@@ -146,10 +146,7 @@ pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'_>> {
     let config = ParseConfig::default();
     let (_rest, obj) = parse_object(input, &config)?;
 
-    Ok(Vdf {
-        key: Cow::Borrowed("root"),
-        value: Value::Obj(obj),
-    })
+    Ok(Vdf::new("root", Value::Obj(obj)))
 }
 
 /// Parse appinfo.vdf format binary data.
@@ -317,10 +314,10 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
         rest = &rest[vdf_end..];
     }
 
-    Ok(Vdf {
-        key: Cow::Owned(format!("appinfo_universe_{}", universe)),
-        value: Value::Obj(obj),
-    })
+    Ok(Vdf::new(
+        format!("appinfo_universe_{}", universe),
+        Value::Obj(obj),
+    ))
 }
 
 /// Parses an object from binary VDF data.
@@ -812,10 +809,10 @@ pub fn parse_packageinfo(input: &[u8]) -> Result<Vdf<'_>> {
         rest = &rest[vdf_data_offset + vdf_end..];
     }
 
-    Ok(Vdf {
-        key: Cow::Owned(format!("packageinfo_universe_{}", universe)),
-        value: Value::Obj(obj),
-    })
+    Ok(Vdf::new(
+        format!("packageinfo_universe_{}", universe),
+        Value::Obj(obj),
+    ))
 }
 
 #[cfg(test)]
@@ -838,7 +835,7 @@ mod tests {
         assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
 
         let vdf = result.unwrap();
-        assert_eq!(vdf.key, "root");
+        assert_eq!(vdf.key(), "root");
 
         let obj = vdf.as_obj().unwrap();
         let test_obj = obj.get("test").and_then(|v| v.as_obj());
@@ -1253,7 +1250,7 @@ mod tests {
             result.err()
         );
         let vdf = result.unwrap();
-        assert_eq!(vdf.key, "packageinfo_universe_1");
+        assert_eq!(vdf.key(), "packageinfo_universe_1");
         let obj = vdf.as_obj().unwrap();
         assert_eq!(obj.len(), 0, "Should have no packages");
     }
@@ -1273,7 +1270,7 @@ mod tests {
             result.err()
         );
         let vdf = result.unwrap();
-        assert_eq!(vdf.key, "packageinfo_universe_1");
+        assert_eq!(vdf.key(), "packageinfo_universe_1");
         let obj = vdf.as_obj().unwrap();
         assert_eq!(obj.len(), 0, "Should have no packages");
     }
@@ -1339,7 +1336,7 @@ mod tests {
             result.err()
         );
         let vdf = result.unwrap();
-        assert_eq!(vdf.key, "packageinfo_universe_0");
+        assert_eq!(vdf.key(), "packageinfo_universe_0");
 
         let obj = vdf.as_obj().unwrap();
         assert_eq!(obj.len(), 1);
@@ -1381,7 +1378,7 @@ mod tests {
             result.err()
         );
         let vdf = result.unwrap();
-        assert_eq!(vdf.key, "packageinfo_universe_0");
+        assert_eq!(vdf.key(), "packageinfo_universe_0");
 
         let obj = vdf.as_obj().unwrap();
         assert_eq!(obj.len(), 1);
