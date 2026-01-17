@@ -177,7 +177,7 @@ impl Error {
     ///
     /// This is used to add a base offset when parsing from a sub-slice,
     /// converting relative offsets to absolute offsets in the original input.
-    pub fn with_offset(mut self, base: usize) -> Self {
+    fn with_offset(mut self, base: usize) -> Self {
         match &mut self {
             Error::UnexpectedEndOfInput { offset, .. } => *offset += base,
             Error::InvalidUtf8 { offset } => *offset += base,
@@ -194,12 +194,7 @@ impl Error {
 /// Returns a closure that adds an offset to an error.
 ///
 /// This is used with `.map_err()` to adjust error offsets when parsing from sub-slices.
-///
-/// # Example
-/// ```ignore
-/// let result = parse_value(data).map_err(with_offset(base_offset))?;
-/// ```
-pub fn with_offset(base: usize) -> impl Fn(Error) -> Error {
+pub(crate) fn with_offset(base: usize) -> impl Fn(Error) -> Error {
     move |err| err.with_offset(base)
 }
 
