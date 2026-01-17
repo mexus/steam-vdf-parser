@@ -66,27 +66,8 @@ fn test_value_from_obj() {
 }
 
 // ============================================================================
-// Null and Default tests
+// Type check tests
 // ============================================================================
-
-#[test]
-fn test_value_is_null() {
-    let v = Value::Null;
-    assert!(v.is_null());
-    assert!(!v.is_str());
-    assert!(!v.is_i32());
-}
-
-#[test]
-fn test_value_default_is_null() {
-    let v: Value = Value::default();
-    assert!(v.is_null());
-}
-
-#[test]
-fn test_value_display_null() {
-    assert_eq!(format!("{}", Value::Null), "null");
-}
 
 #[test]
 fn test_value_is_methods() {
@@ -94,7 +75,6 @@ fn test_value_is_methods() {
     assert!(v.is_i32());
     assert!(!v.is_str());
     assert!(!v.is_obj());
-    assert!(!v.is_null());
 }
 
 #[test]
@@ -321,11 +301,6 @@ fn test_into_owned_value_obj() {
     let value = Value::Obj(obj);
     let owned = value.into_owned();
     assert!(owned.is_obj());
-}
-
-#[test]
-fn test_into_owned_value_null() {
-    assert_eq!(Value::Null.into_owned(), Value::Null);
 }
 
 #[test]
@@ -612,20 +587,23 @@ fn test_value_index_existing_key() {
 }
 
 #[test]
+#[should_panic(expected = "key not found in Value")]
 fn test_value_index_missing_key() {
     let mut obj = Obj::new();
     obj.insert("name", "Alice".into());
     let value = Value::Obj(obj);
 
-    assert!(value["nonexistent"].is_null());
+    // This should panic because the key doesn't exist
+    let _ = &value["nonexistent"];
 }
 
 #[test]
+#[should_panic(expected = "key not found in Value")]
 fn test_value_index_on_non_obj() {
     let value = Value::Str("not an object".into());
 
-    // Indexing a non-object returns null
-    assert!(value["any"].is_null());
+    // This should panic because indexing a non-object fails
+    let _ = &value["any"];
 }
 
 #[test]
@@ -637,10 +615,12 @@ fn test_obj_index_existing_key() {
 }
 
 #[test]
+#[should_panic(expected = "key not found in Obj")]
 fn test_obj_index_missing_key() {
     let obj = Obj::new();
 
-    assert!(obj["nonexistent"].is_null());
+    // This should panic because the key doesn't exist
+    let _ = &obj["nonexistent"];
 }
 
 #[test]
@@ -653,8 +633,21 @@ fn test_index_chained_access() {
 
     let value = Value::Obj(outer);
 
-    // Chained indexing
+    // Chained indexing works when keys exist
     assert_eq!(value["inner"]["value"].as_str(), Some("found"));
-    // Missing intermediate key
-    assert!(value["missing"]["anything"].is_null());
+}
+
+#[test]
+#[should_panic(expected = "key not found in Value")]
+fn test_index_chained_access_missing_key() {
+    let mut inner = Obj::new();
+    inner.insert("value", "found".into());
+
+    let mut outer = Obj::new();
+    outer.insert("inner", Value::Obj(inner));
+
+    let value = Value::Obj(outer);
+
+    // This should panic because "missing" doesn't exist
+    let _ = &value["missing"]["anything"];
 }

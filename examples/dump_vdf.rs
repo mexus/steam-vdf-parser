@@ -5,8 +5,6 @@ use steam_vdf_parser::{binary, parse_binary, parse_text};
 fn dump_value(value: &steam_vdf_parser::Value, indent: usize) -> String {
     let indent_str = "  ".repeat(indent);
     match value {
-        // Note: Null is only used for missing key lookups, never produced by parsers
-        steam_vdf_parser::Value::Null => format!("{}null", indent_str),
         steam_vdf_parser::Value::Str(s) => format!("{}\"{}\"", indent_str, s),
         steam_vdf_parser::Value::I32(n) => format!("{}{}", indent_str, n),
         steam_vdf_parser::Value::U64(n) => format!("{}{}", indent_str, n),
@@ -21,8 +19,6 @@ fn dump_value(value: &steam_vdf_parser::Value, indent: usize) -> String {
             for (k, v) in obj.iter() {
                 out.push_str(&format!("{}\"\"{}\"\": ", indent_str, k));
                 match v {
-                    // Note: Null is only used for missing key lookups, never produced by parsers
-                    steam_vdf_parser::Value::Null => out.push_str("null\n"),
                     steam_vdf_parser::Value::Obj(_) => {
                         out.push_str(&dump_value(v, indent + 1));
                     }

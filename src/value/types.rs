@@ -7,11 +7,8 @@ use hashbrown::HashMap;
 pub(crate) type Key<'text> = Cow<'text, str>;
 
 /// VDF Value - can be a string, number, object, or other types
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Value<'text> {
-    /// Null value (used for missing keys when indexing)
-    #[default]
-    Null,
     /// A string value (text format and WideString from binary)
     Str(Cow<'text, str>),
     /// An object containing nested key-value pairs
@@ -29,11 +26,6 @@ pub enum Value<'text> {
 }
 
 impl<'text> Value<'text> {
-    /// Returns `true` if this value is null.
-    pub fn is_null(&self) -> bool {
-        matches!(self, Value::Null)
-    }
-
     /// Returns `true` if this value is a string.
     pub fn is_str(&self) -> bool {
         matches!(self, Value::Str(_))

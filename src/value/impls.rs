@@ -62,7 +62,6 @@ impl<'text> From<Obj<'text>> for Value<'text> {
 impl<'text> fmt::Display for Value<'text> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::Null => write!(f, "null"),
             Value::Str(s) => write!(f, "{}", s),
             Value::Obj(obj) => write!(f, "{}", obj),
             Value::I32(n) => write!(f, "{}", n),
@@ -125,17 +124,17 @@ impl<'a, 'text> IntoIterator for &'a Obj<'text> {
 // Index implementations for Value and Obj
 // ============================================================================
 
-/// Static null value used for returning a reference when key is not found.
-static NULL: Value<'static> = Value::Null;
-
 impl<'text> Index<&str> for Value<'text> {
     type Output = Value<'text>;
 
     /// Returns a reference to the value at the given key.
     ///
-    /// If this is not an object or the key doesn't exist, returns `Value::Null`.
+    /// # Panics
+    ///
+    /// Panics if this is not an object or if the key doesn't exist.
+    /// Use `get()` for non-panicking access.
     fn index(&self, key: &str) -> &Self::Output {
-        self.get(key).unwrap_or(&NULL)
+        self.get(key).expect("key not found in Value")
     }
 }
 
@@ -144,8 +143,10 @@ impl<'text> Index<&str> for Obj<'text> {
 
     /// Returns a reference to the value at the given key.
     ///
-    /// If the key doesn't exist, returns `Value::Null`.
+    /// # Panics
+    ///
+    /// Panics if the key doesn't exist. Use `get()` for non-panicking access.
     fn index(&self, key: &str) -> &Self::Output {
-        self.get(key).unwrap_or(&NULL)
+        self.get(key).expect("key not found in Obj")
     }
 }

@@ -97,7 +97,6 @@ impl Value<'_> {
     /// Convert to an owned version (with 'static lifetime).
     pub fn into_owned(self) -> Value<'static> {
         match self {
-            Value::Null => Value::Null,
             Value::Str(s) => Value::Str(match s {
                 Cow::Borrowed(b) => b.to_string().into(),
                 Cow::Owned(o) => o.into(),
