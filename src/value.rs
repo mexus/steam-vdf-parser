@@ -117,6 +117,49 @@ impl<'text> Value<'text> {
             _ => None,
         }
     }
+
+    /// Returns a reference to a nested value by key.
+    ///
+    /// Shorthand for `self.as_obj()?.get(key)`.
+    pub fn get(&self, key: &str) -> Option<&Value<'text>> {
+        self.as_obj()?.get(key)
+    }
+
+    /// Traverse nested objects by path.
+    ///
+    /// Returns `None` if any segment doesn't exist or isn't an object.
+    pub fn get_path(&self, path: &[&str]) -> Option<&Value<'text>> {
+        let mut current = self;
+        for key in path {
+            current = current.get(key)?;
+        }
+        Some(current)
+    }
+
+    /// Get a string at the given path.
+    pub fn get_str(&self, path: &[&str]) -> Option<&Cow<'text, str>> {
+        self.get_path(path)?.as_str()
+    }
+
+    /// Get an object at the given path.
+    pub fn get_obj(&self, path: &[&str]) -> Option<&Obj<'text>> {
+        self.get_path(path)?.as_obj()
+    }
+
+    /// Get an i32 at the given path.
+    pub fn get_i32(&self, path: &[&str]) -> Option<i32> {
+        self.get_path(path)?.as_i32()
+    }
+
+    /// Get a u64 at the given path.
+    pub fn get_u64(&self, path: &[&str]) -> Option<u64> {
+        self.get_path(path)?.as_u64()
+    }
+
+    /// Get a float at the given path.
+    pub fn get_float(&self, path: &[&str]) -> Option<f32> {
+        self.get_path(path)?.as_float()
+    }
 }
 
 impl<'text> fmt::Display for Value<'text> {
@@ -220,6 +263,41 @@ impl<'text> Vdf<'text> {
     /// Returns a reference to the root object if it is one.
     pub fn as_obj(&self) -> Option<&Obj<'text>> {
         self.value.as_obj()
+    }
+
+    /// Returns a reference to a nested value by key.
+    pub fn get(&self, key: &str) -> Option<&Value<'text>> {
+        self.value.get(key)
+    }
+
+    /// Traverse nested objects by path from the root value.
+    pub fn get_path(&self, path: &[&str]) -> Option<&Value<'text>> {
+        self.value.get_path(path)
+    }
+
+    /// Get a string at the given path.
+    pub fn get_str(&self, path: &[&str]) -> Option<&Cow<'text, str>> {
+        self.value.get_str(path)
+    }
+
+    /// Get an object at the given path.
+    pub fn get_obj(&self, path: &[&str]) -> Option<&Obj<'text>> {
+        self.value.get_obj(path)
+    }
+
+    /// Get an i32 at the given path.
+    pub fn get_i32(&self, path: &[&str]) -> Option<i32> {
+        self.value.get_i32(path)
+    }
+
+    /// Get a u64 at the given path.
+    pub fn get_u64(&self, path: &[&str]) -> Option<u64> {
+        self.value.get_u64(path)
+    }
+
+    /// Get a float at the given path.
+    pub fn get_float(&self, path: &[&str]) -> Option<f32> {
+        self.value.get_float(path)
     }
 }
 
@@ -513,5 +591,196 @@ mod tests {
         let owned = vdf.into_owned();
         assert_eq!(owned.key, Cow::Owned::<str>("root".to_string()));
         assert_eq!(owned.value, Value::I32(42));
+    }
+
+    // Tests for Value::get and get_path methods
+
+    #[test]
+    fn test_value_get_on_obj() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("key"), Value::I32(42));
+        let value = Value::Obj(obj);
+        assert_eq!(value.get("key").and_then(|v| v.as_i32()), Some(42));
+        assert_eq!(value.get("missing"), None);
+    }
+
+    #[test]
+    fn test_value_get_on_non_obj() {
+        let value = Value::I32(42);
+        assert_eq!(value.get("key"), None);
+    }
+
+    #[test]
+    fn test_value_get_path_single_key() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("key"), Value::I32(42));
+        let value = Value::Obj(obj);
+        assert_eq!(value.get_path(&["key"]).and_then(|v| v.as_i32()), Some(42));
+    }
+
+    #[test]
+    fn test_value_get_path_empty() {
+        let value = Value::I32(42);
+        assert_eq!(value.get_path(&[]).and_then(|v| v.as_i32()), Some(42));
+    }
+
+    #[test]
+    fn test_value_get_path_nested() {
+        let mut inner = Obj::new();
+        inner.insert(Cow::Borrowed("c"), Value::Str(Cow::Borrowed("found")));
+        let mut middle = Obj::new();
+        middle.insert(Cow::Borrowed("b"), Value::Obj(inner));
+        let mut outer = Obj::new();
+        outer.insert(Cow::Borrowed("a"), Value::Obj(middle));
+        let value = Value::Obj(outer);
+
+        assert_eq!(
+            value.get_path(&["a", "b", "c"]).and_then(|v| v.as_str()),
+            Some(&Cow::Borrowed("found"))
+        );
+    }
+
+    #[test]
+    fn test_value_get_path_missing_intermediate() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("a"), Value::I32(42));
+        let value = Value::Obj(obj);
+        assert_eq!(value.get_path(&["a", "b"]), None);
+    }
+
+    #[test]
+    fn test_value_get_path_non_obj_intermediate() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("a"), Value::I32(42));
+        let value = Value::Obj(obj);
+        assert_eq!(value.get_path(&["a", "b"]), None);
+    }
+
+    #[test]
+    fn test_value_get_str() {
+        let mut inner = Obj::new();
+        inner.insert(Cow::Borrowed("name"), Value::Str(Cow::Borrowed("test")));
+        let mut outer = Obj::new();
+        outer.insert(Cow::Borrowed("data"), Value::Obj(inner));
+        let value = Value::Obj(outer);
+
+        assert_eq!(
+            value.get_str(&["data", "name"]),
+            Some(&Cow::Borrowed("test"))
+        );
+        assert_eq!(value.get_str(&["data", "missing"]), None);
+    }
+
+    #[test]
+    fn test_value_get_obj() {
+        let mut inner = Obj::new();
+        inner.insert(Cow::Borrowed("key"), Value::I32(1));
+        let mut outer = Obj::new();
+        outer.insert(Cow::Borrowed("nested"), Value::Obj(inner));
+        let value = Value::Obj(outer);
+
+        let obj = value.get_obj(&["nested"]).unwrap();
+        assert_eq!(obj.len(), 1);
+    }
+
+    #[test]
+    fn test_value_get_i32() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("num"), Value::I32(123));
+        let value = Value::Obj(obj);
+
+        assert_eq!(value.get_i32(&["num"]), Some(123));
+        assert_eq!(value.get_i32(&["missing"]), None);
+    }
+
+    #[test]
+    fn test_value_get_u64() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("big"), Value::U64(9999999999));
+        let value = Value::Obj(obj);
+
+        assert_eq!(value.get_u64(&["big"]), Some(9999999999));
+    }
+
+    #[test]
+    fn test_value_get_float() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("pi"), Value::Float(3.14));
+        let value = Value::Obj(obj);
+
+        assert_eq!(value.get_float(&["pi"]), Some(3.14));
+    }
+
+    // Tests for Vdf delegation methods
+
+    #[test]
+    fn test_vdf_get() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("key"), Value::I32(42));
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(obj));
+
+        assert_eq!(vdf.get("key").and_then(|v| v.as_i32()), Some(42));
+        assert_eq!(vdf.get("missing"), None);
+    }
+
+    #[test]
+    fn test_vdf_get_path() {
+        let mut inner = Obj::new();
+        inner.insert(Cow::Borrowed("value"), Value::Str(Cow::Borrowed("found")));
+        let mut outer = Obj::new();
+        outer.insert(Cow::Borrowed("nested"), Value::Obj(inner));
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(outer));
+
+        assert_eq!(
+            vdf.get_path(&["nested", "value"]).and_then(|v| v.as_str()),
+            Some(&Cow::Borrowed("found"))
+        );
+    }
+
+    #[test]
+    fn test_vdf_get_str() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("name"), Value::Str(Cow::Borrowed("test")));
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(obj));
+
+        assert_eq!(vdf.get_str(&["name"]), Some(&Cow::Borrowed("test")));
+    }
+
+    #[test]
+    fn test_vdf_get_obj() {
+        let mut inner = Obj::new();
+        inner.insert(Cow::Borrowed("k"), Value::I32(1));
+        let mut outer = Obj::new();
+        outer.insert(Cow::Borrowed("inner"), Value::Obj(inner));
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(outer));
+
+        assert!(vdf.get_obj(&["inner"]).is_some());
+    }
+
+    #[test]
+    fn test_vdf_get_i32() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("num"), Value::I32(42));
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(obj));
+
+        assert_eq!(vdf.get_i32(&["num"]), Some(42));
+    }
+
+    #[test]
+    fn test_vdf_get_u64() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("big"), Value::U64(12345678901234));
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(obj));
+
+        assert_eq!(vdf.get_u64(&["big"]), Some(12345678901234));
+    }
+
+    #[test]
+    fn test_vdf_get_float() {
+        let mut obj = Obj::new();
+        obj.insert(Cow::Borrowed("f"), Value::Float(2.5));
+        let vdf = Vdf::new(Cow::Borrowed("root"), Value::Obj(obj));
+
+        assert_eq!(vdf.get_float(&["f"]), Some(2.5));
     }
 }
