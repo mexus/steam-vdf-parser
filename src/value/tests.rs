@@ -167,18 +167,18 @@ fn test_value_as_color() {
 
 #[test]
 fn test_value_display_i32() {
-    assert_eq!(format!("{}", Value::I32(42)), "42");
-    assert_eq!(format!("{}", Value::I32(-42)), "-42");
+    assert_eq!(format!("{}", Value::I32(42)), "\"42\"");
+    assert_eq!(format!("{}", Value::I32(-42)), "\"-42\"");
 }
 
 #[test]
 fn test_value_display_u64() {
-    assert_eq!(format!("{}", Value::U64(100)), "100");
+    assert_eq!(format!("{}", Value::U64(100)), "\"100\"");
 }
 
 #[test]
 fn test_value_display_str() {
-    assert_eq!(format!("{}", Value::Str(Cow::Borrowed("test"))), "test");
+    assert_eq!(format!("{}", Value::Str(Cow::Borrowed("test"))), "\"test\"");
 }
 
 #[test]
@@ -186,24 +186,24 @@ fn test_value_display_obj() {
     let mut obj = Obj::new();
     obj.insert(Cow::Borrowed("key"), Value::I32(42));
     let v = Value::Obj(obj);
-    assert!(format!("{}", v).contains("key"));
-    assert!(format!("{}", v).contains("42"));
+    assert!(format!("{}", v).contains("\"key\""));
+    assert!(format!("{}", v).contains("\"42\""));
 }
 
 #[test]
 fn test_value_display_float() {
     let v = Value::Float(1.5);
-    assert_eq!(format!("{}", v), "1.5");
+    assert_eq!(format!("{}", v), "\"1.5\"");
 }
 
 #[test]
 fn test_value_display_pointer() {
-    assert_eq!(format!("{}", Value::Pointer(0x12345678)), "0x12345678");
+    assert_eq!(format!("{}", Value::Pointer(0x12345678)), "\"0x12345678\"");
 }
 
 #[test]
 fn test_value_display_color() {
-    assert_eq!(format!("{}", Value::Color([255, 0, 0, 255])), "25500255");
+    assert_eq!(format!("{}", Value::Color([255, 0, 0, 255])), "\"255 0 0 255\"");
 }
 
 #[test]
@@ -650,4 +650,142 @@ fn test_index_chained_access_missing_key() {
 
     // This should panic because "missing" doesn't exist
     let _ = &value["missing"]["anything"];
+}
+
+// ============================================================================
+// Pretty-print Display tests
+// ============================================================================
+
+#[test]
+fn test_value_pretty_str() {
+    let value = Value::Str(Cow::Borrowed("hello"));
+    assert_eq!(format!("{:#}", value), "\"hello\"");
+}
+
+#[test]
+fn test_value_pretty_str_with_escapes() {
+    let value = Value::Str(Cow::Borrowed("line1\nline2\ttab\\backslash\"quote"));
+    assert_eq!(
+        format!("{:#}", value),
+        "\"line1\\nline2\\ttab\\\\backslash\\\"quote\""
+    );
+}
+
+#[test]
+fn test_value_pretty_i32() {
+    let value = Value::I32(42);
+    assert_eq!(format!("{:#}", value), "\"42\"");
+}
+
+#[test]
+fn test_value_pretty_u64() {
+    let value = Value::U64(123456789);
+    assert_eq!(format!("{:#}", value), "\"123456789\"");
+}
+
+#[test]
+fn test_value_pretty_float() {
+    let value = Value::Float(1.5);
+    assert_eq!(format!("{:#}", value), "\"1.5\"");
+}
+
+#[test]
+fn test_value_pretty_pointer() {
+    let value = Value::Pointer(0x12345678);
+    assert_eq!(format!("{:#}", value), "\"0x12345678\"");
+}
+
+#[test]
+fn test_value_pretty_color() {
+    let value = Value::Color([255, 0, 128, 64]);
+    assert_eq!(format!("{:#}", value), "\"255 0 128 64\"");
+}
+
+#[test]
+fn test_obj_pretty_simple() {
+    let mut obj = Obj::new();
+    obj.insert("key", "value".into());
+    let output = format!("{:#}", obj);
+    // Should contain proper VDF structure
+    assert!(output.starts_with("{\n"));
+    assert!(output.ends_with("}"));
+    assert!(output.contains("\"key\""));
+    assert!(output.contains("\"value\""));
+}
+
+#[test]
+fn test_obj_pretty_nested() {
+    let mut inner = Obj::new();
+    inner.insert("inner_key", "inner_value".into());
+    let mut outer = Obj::new();
+    outer.insert("nested", Value::Obj(inner));
+
+    let output = format!("{:#}", outer);
+    // Should have nested structure with proper indentation
+    assert!(output.contains("\"nested\""));
+    assert!(output.contains("\"inner_key\""));
+    assert!(output.contains("\"inner_value\""));
+    // Check for proper indentation (tabs)
+    assert!(output.contains("\t\"nested\""));
+    assert!(output.contains("\t\t\"inner_key\""));
+}
+
+#[test]
+fn test_vdf_pretty() {
+    let mut obj = Obj::new();
+    obj.insert("key", "value".into());
+    let vdf = Vdf::new("root", Value::Obj(obj));
+
+    let output = format!("{:#}", vdf);
+    // Should start with quoted key followed by newline and brace
+    assert!(output.starts_with("\"root\"\n{"));
+    assert!(output.contains("\"key\"\t\"value\""));
+}
+
+#[test]
+fn test_vdf_pretty_complex() {
+    let mut inner = Obj::new();
+    inner.insert("value", "found".into());
+    inner.insert("number", Value::I32(42));
+
+    let mut outer = Obj::new();
+    outer.insert("nested", Value::Obj(inner));
+    outer.insert("simple", "string".into());
+
+    let vdf = Vdf::new("TestVdf", Value::Obj(outer));
+
+    let output = format!("{:#}", vdf);
+    // Verify structure
+    assert!(output.starts_with("\"TestVdf\"\n{"), "output: {}", output);
+    // The closing brace may or may not have a trailing newline depending on
+    // whether the last element is a nested object, so just check it ends with }
+    assert!(output.trim_end().ends_with("}"), "output: {}", output);
+    // Verify content is present (order may vary due to HashMap)
+    assert!(output.contains("\"nested\""), "output: {}", output);
+    assert!(output.contains("\"simple\"\t\"string\""), "output: {}", output);
+    assert!(output.contains("\"value\"\t\"found\""), "output: {}", output);
+    assert!(output.contains("\"number\"\t\"42\""), "output: {}", output);
+}
+
+#[test]
+fn test_value_display_produces_vdf_format() {
+    // Display always produces valid VDF text format
+    let value = Value::Str(Cow::Borrowed("test"));
+    assert_eq!(format!("{}", value), "\"test\"");
+    // Alternate format is the same
+    assert_eq!(format!("{:#}", value), "\"test\"");
+}
+
+#[test]
+fn test_obj_display_produces_vdf_format() {
+    let mut obj = Obj::new();
+    obj.insert("k", "v".into());
+
+    // Display produces VDF format with newlines and proper quoting
+    let output = format!("{}", obj);
+    assert!(output.contains('\n'));
+    assert!(output.contains("\"k\""));
+    assert!(output.contains("\"v\""));
+    // Alternate format is the same
+    assert_eq!(format!("{:#}", obj), output);
 }
