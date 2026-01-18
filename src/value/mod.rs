@@ -1,5 +1,6 @@
 //! Core data structures for VDF representation.
 
+mod hasher;
 mod impls;
 mod types;
 

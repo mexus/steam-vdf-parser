@@ -167,7 +167,7 @@ impl<'text> fmt::Display for Vdf<'text> {
 
 impl<'text> IntoIterator for Obj<'text> {
     type Item = (Key<'text>, Value<'text>);
-    type IntoIter = hashbrown::hash_map::IntoIter<Key<'text>, Value<'text>>;
+    type IntoIter = indexmap::map::IntoIter<Key<'text>, Value<'text>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.inner.into_iter()
@@ -176,7 +176,7 @@ impl<'text> IntoIterator for Obj<'text> {
 
 impl<'a, 'text> IntoIterator for &'a Obj<'text> {
     type Item = (&'a Key<'text>, &'a Value<'text>);
-    type IntoIter = hashbrown::hash_map::Iter<'a, Key<'text>, Value<'text>>;
+    type IntoIter = indexmap::map::Iter<'a, Key<'text>, Value<'text>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.inner.iter()

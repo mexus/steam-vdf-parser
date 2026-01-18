@@ -1,7 +1,9 @@
 //! Type definitions for VDF values.
 
 use alloc::borrow::Cow;
-use hashbrown::HashMap;
+use indexmap::IndexMap;
+
+use super::hasher::DefaultHashBuilder;
 
 /// A key in VDF - zero-copy when possible
 pub(crate) type Key<'text> = Cow<'text, str>;
@@ -171,18 +173,19 @@ impl<'text> Value<'text> {
 
 /// Object - map from keys to values
 ///
-/// Uses `HashMap` for O(1) lookup. Binary VDF doesn't have duplicate keys,
-/// and for text VDF we use "last value wins" semantics.
+/// Uses `IndexMap` for O(1) lookup while preserving insertion order.
+/// Binary VDF doesn't have duplicate keys, and for text VDF we use
+/// "last value wins" semantics.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Obj<'text> {
-    pub(crate) inner: HashMap<Key<'text>, Value<'text>>,
+    pub(crate) inner: IndexMap<Key<'text>, Value<'text>, DefaultHashBuilder>,
 }
 
 impl<'text> Obj<'text> {
     /// Creates a new empty VDF object.
     pub fn new() -> Self {
         Self {
-            inner: HashMap::new(),
+            inner: IndexMap::with_hasher(DefaultHashBuilder::default()),
         }
     }
 
@@ -237,11 +240,24 @@ impl<'text> Obj<'text> {
         self.inner.insert(key.into(), value)
     }
 
-    /// Removes a key from the object.
+    /// Removes a key from the object, preserving insertion order.
+    ///
+    /// This is O(n) as it shifts subsequent elements. Use [`swap_remove`](Self::swap_remove)
+    /// for O(1) removal when order doesn't matter.
     ///
     /// Returns the value if the key was present.
     pub fn remove(&mut self, key: &str) -> Option<Value<'text>> {
-        self.inner.remove(key)
+        self.inner.shift_remove(key)
+    }
+
+    /// Removes a key from the object by swapping with the last element.
+    ///
+    /// This is O(1) but does not preserve insertion order.
+    /// Use [`remove`](Self::remove) if order preservation is needed.
+    ///
+    /// Returns the value if the key was present.
+    pub fn swap_remove(&mut self, key: &str) -> Option<Value<'text>> {
+        self.inner.swap_remove(key)
     }
 }
 
