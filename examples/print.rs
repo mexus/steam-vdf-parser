@@ -15,7 +15,9 @@ fn main() {
         eprintln!("Usage: {} <vdf_file>", args[0]);
         eprintln!();
         eprintln!("Pretty-prints a VDF file to stdout in valid VDF text format.");
-        eprintln!("Supports both text (.vdf) and binary (appinfo.vdf, packageinfo.vdf, shortcuts.vdf) formats.");
+        eprintln!(
+            "Supports both text (.vdf) and binary (appinfo.vdf, packageinfo.vdf, shortcuts.vdf) formats."
+        );
         std::process::exit(1);
     }
 

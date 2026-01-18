@@ -203,7 +203,10 @@ fn test_value_display_pointer() {
 
 #[test]
 fn test_value_display_color() {
-    assert_eq!(format!("{}", Value::Color([255, 0, 0, 255])), "\"255 0 0 255\"");
+    assert_eq!(
+        format!("{}", Value::Color([255, 0, 0, 255])),
+        "\"255 0 0 255\""
+    );
 }
 
 #[test]
@@ -762,8 +765,16 @@ fn test_vdf_pretty_complex() {
     assert!(output.trim_end().ends_with("}"), "output: {}", output);
     // Verify content is present (order may vary due to HashMap)
     assert!(output.contains("\"nested\""), "output: {}", output);
-    assert!(output.contains("\"simple\"\t\"string\""), "output: {}", output);
-    assert!(output.contains("\"value\"\t\"found\""), "output: {}", output);
+    assert!(
+        output.contains("\"simple\"\t\"string\""),
+        "output: {}",
+        output
+    );
+    assert!(
+        output.contains("\"value\"\t\"found\""),
+        "output: {}",
+        output
+    );
     assert!(output.contains("\"number\"\t\"42\""), "output: {}", output);
 }
 

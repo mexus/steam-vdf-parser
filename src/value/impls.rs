@@ -149,7 +149,14 @@ impl<'text> Default for Obj<'text> {
 
 impl<'text> fmt::Display for Obj<'text> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", PrettyObj { obj: self, indent: 0 })
+        write!(
+            f,
+            "{}",
+            PrettyObj {
+                obj: self,
+                indent: 0
+            }
+        )
     }
 }
 

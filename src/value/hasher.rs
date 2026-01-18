@@ -1,7 +1,9 @@
 //! Default hasher for IndexMap.
 
+use core::fmt::Debug;
 use core::hash::{BuildHasher, Hasher};
 use foldhash::fast::RandomState;
+use static_assertions::assert_impl_all;
 
 /// Default hash builder for IndexMap.
 #[derive(Clone, Debug, Default)]
@@ -95,5 +97,31 @@ impl Hasher for DefaultHasher {
     #[inline(always)]
     fn finish(&self) -> u64 {
         self.inner.finish()
+    }
+}
+
+assert_impl_all!(DefaultHashBuilder: Clone, Debug, Default, BuildHasher);
+assert_impl_all!(DefaultHasher: Clone, Hasher);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::hash::{BuildHasher, Hasher};
+
+    #[test]
+    fn write_order_affects_hash() {
+        let builder = DefaultHashBuilder::default();
+        let hasher = builder.build_hasher();
+
+        let mut h1 = hasher.clone();
+        let mut h2 = hasher.clone();
+
+        h1.write(b"a");
+        h1.write(b"b");
+
+        h2.write(b"b");
+        h2.write(b"a");
+
+        assert_ne!(h1.finish(), h2.finish());
     }
 }
