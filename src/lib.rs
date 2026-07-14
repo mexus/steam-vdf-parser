@@ -44,38 +44,71 @@ pub use error::{Error, Result};
 pub use value::{Obj, Value, Vdf};
 
 // Re-export commonly used functions
+pub use binary::{InvalidUtf8, ParseOptions};
 pub use text::parse_text;
 
 /// Parse VDF from binary format (autodetects shortcuts or appinfo format).
 ///
 /// This function returns zero-copy data where possible - strings are borrowed
 /// from the input buffer. Use `.into_owned()` to convert to an owned `Vdf<'static>`.
+///
+/// Uses default [`ParseOptions`] (invalid UTF-8 handled lossily). Use
+/// [`parse_binary_with`] to control this.
 pub fn parse_binary(input: &[u8]) -> Result<Vdf<'_>> {
     binary::parse(input)
+}
+
+/// Parse VDF from binary format (autodetects format) with explicit [`ParseOptions`].
+pub fn parse_binary_with(input: &[u8], options: ParseOptions) -> Result<Vdf<'_>> {
+    binary::parse_with(input, options)
 }
 
 /// Parse a shortcuts.vdf format binary file.
 ///
 /// This function returns zero-copy data where possible - strings are borrowed
 /// from the input buffer. Use `.into_owned()` to convert to an owned `Vdf<'static>`.
+///
+/// Uses default [`ParseOptions`] (invalid UTF-8 handled lossily). Use
+/// [`parse_shortcuts_with`] to control this.
 pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'_>> {
     binary::parse_shortcuts(input)
+}
+
+/// Parse a shortcuts.vdf format binary file with explicit [`ParseOptions`].
+pub fn parse_shortcuts_with(input: &[u8], options: ParseOptions) -> Result<Vdf<'_>> {
+    binary::parse_shortcuts_with(input, options)
 }
 
 /// Parse an appinfo.vdf format binary file.
 ///
 /// This function returns zero-copy data where possible - strings are borrowed
 /// from the input buffer. Use `.into_owned()` to convert to an owned `Vdf<'static>`.
+///
+/// Uses default [`ParseOptions`] (invalid UTF-8 handled lossily). Use
+/// [`parse_appinfo_with`] to control this.
 pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
     binary::parse_appinfo(input)
+}
+
+/// Parse an appinfo.vdf format binary file with explicit [`ParseOptions`].
+pub fn parse_appinfo_with(input: &[u8], options: ParseOptions) -> Result<Vdf<'_>> {
+    binary::parse_appinfo_with(input, options)
 }
 
 /// Parse a packageinfo.vdf format binary file.
 ///
 /// This function returns zero-copy data where possible - strings are borrowed
 /// from the input buffer. Use `.into_owned()` to convert to an owned `Vdf<'static>`.
+///
+/// Uses default [`ParseOptions`] (invalid UTF-8 handled lossily). Use
+/// [`parse_packageinfo_with`] to control this.
 pub fn parse_packageinfo(input: &[u8]) -> Result<Vdf<'_>> {
     binary::parse_packageinfo(input)
+}
+
+/// Parse a packageinfo.vdf format binary file with explicit [`ParseOptions`].
+pub fn parse_packageinfo_with(input: &[u8], options: ParseOptions) -> Result<Vdf<'_>> {
+    binary::parse_packageinfo_with(input, options)
 }
 
 // Convert from borrowed to owned
