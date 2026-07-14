@@ -72,6 +72,27 @@ let data = read_vdf_data_somehow()?;
 let vdf = parse_packageinfo(&data)?;
 ```
 
+### Invalid UTF-8
+
+Steam stores binary VDF strings as raw bytes and does **not** guarantee they are
+valid UTF-8 — localized fields in particular often carry legacy code-page bytes
+(e.g. a Czech app name `Moje Spore výtvory`, where `ý` is Windows-1250 `0xFD`).
+
+By default the parser handles such bytes **lossily**, substituting the U+FFFD
+replacement character (valid strings are still borrowed zero-copy; only strings
+with invalid bytes are allocated). To instead get an error on invalid UTF-8, use
+the `*_with` variants with `InvalidUtf8::Strict`:
+
+```rust
+use steam_vdf_parser::{parse_appinfo_with, InvalidUtf8, ParseOptions};
+
+let opts = ParseOptions::new().invalid_utf8(InvalidUtf8::Strict);
+let vdf = parse_appinfo_with(&data, opts)?;
+```
+
+Each format has a `*_with` counterpart: `parse_binary_with`, `parse_shortcuts_with`,
+`parse_appinfo_with`, `parse_packageinfo_with`.
+
 ## `no_std` Support
 
 This library is `no_std` compatible and only requires the `alloc` crate. Enable it in your `Cargo.toml`:

@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::str;
 
 use crate::binary::byte_reader::{read_u32_le, read_u64_le};
+use crate::binary::options::{InvalidUtf8, ParseOptions};
 use crate::binary::types::{
     APPINFO_MAGIC_40, APPINFO_MAGIC_41, BinaryType, PACKAGEINFO_MAGIC_39, PACKAGEINFO_MAGIC_40,
     PACKAGEINFO_MAGIC_BASE,
@@ -53,6 +54,8 @@ fn ensure_read_u32_le(input: &[u8]) -> Result<(&[u8], u32)> {
 struct ParseConfig<'input, 'table> {
     /// Strategy for parsing keys
     key_mode: KeyMode<'input, 'table>,
+    /// How to handle strings that are not valid UTF-8
+    invalid_utf8: InvalidUtf8,
 }
 
 /// Key parsing strategy for binary VDF formats.
@@ -73,15 +76,19 @@ enum KeyMode<'input, 'table> {
 /// enabling O(1) lookups by index.
 #[derive(Clone, Debug, PartialEq)]
 struct StringTable<'a> {
-    strings: Vec<&'a str>,
+    strings: Vec<Cow<'a, str>>,
 }
 
 impl<'a> StringTable<'a> {
     /// Get a string by index.
-    fn get(&self, index: usize) -> Result<&'a str> {
+    ///
+    /// Cloning a `Cow::Borrowed` entry only copies the borrow (preserving the
+    /// zero-copy `'a` lifetime); a `Cow::Owned` entry (produced by lossy
+    /// decoding of invalid bytes) is cloned into a new `String`.
+    fn get(&self, index: usize) -> Result<Cow<'a, str>> {
         self.strings
             .get(index)
-            .copied()
+            .cloned()
             .ok_or(Error::InvalidStringIndex {
                 index,
                 max: self.strings.len(),
@@ -91,16 +98,23 @@ impl<'a> StringTable<'a> {
 
 impl<'a> KeyMode<'a, '_> {
     /// Parse a key from input according to this mode.
-    fn parse_key(&self, input: &'a [u8]) -> Result<(&'a [u8], Cow<'a, str>)> {
+    ///
+    /// `invalid_utf8` only matters for [`KeyMode::NullTerminated`]; string-table
+    /// entries are decoded once when the table is parsed.
+    fn parse_key(
+        &self,
+        input: &'a [u8],
+        invalid_utf8: InvalidUtf8,
+    ) -> Result<(&'a [u8], Cow<'a, str>)> {
         match self {
             KeyMode::NullTerminated => {
-                let (rest, s) = parse_null_terminated_string_borrowed(input)?;
-                Ok((rest, Cow::Borrowed(s)))
+                let (rest, s) = parse_null_terminated_string(input, invalid_utf8)?;
+                Ok((rest, s))
             }
             KeyMode::StringTableIndex { string_table } => {
                 let (rest, index) = ensure_read_u32_le(input)?;
                 let s = string_table.get(index as usize)?;
-                Ok((rest, Cow::Borrowed(s)))
+                Ok((rest, s))
             }
         }
     }
@@ -113,19 +127,27 @@ impl<'a> KeyMode<'a, '_> {
 /// For appinfo format, returns mixed data: root key and app ID keys are owned,
 /// but actual parsed values (including string table entries) are borrowed.
 /// For packageinfo format, returns mixed data similar to appinfo.
+///
+/// Uses default [`ParseOptions`] (lossy handling of invalid UTF-8). Use
+/// [`parse_with`] to override.
 pub fn parse(input: &[u8]) -> Result<Vdf<'_>> {
+    parse_with(input, ParseOptions::default())
+}
+
+/// Parse binary VDF data (autodetects format) with explicit [`ParseOptions`].
+pub fn parse_with(input: &[u8], options: ParseOptions) -> Result<Vdf<'_>> {
     // Check if this looks like appinfo or packageinfo format (starts with magic)
     if let Some(magic) = read_u32_le(input) {
         if magic == APPINFO_MAGIC_40 || magic == APPINFO_MAGIC_41 {
-            return parse_appinfo(input);
+            return parse_appinfo_with(input, options);
         }
         if magic == PACKAGEINFO_MAGIC_39 || magic == PACKAGEINFO_MAGIC_40 {
-            return parse_packageinfo(input);
+            return parse_packageinfo_with(input, options);
         }
     }
 
     // Otherwise, parse as shortcuts format (zero-copy)
-    parse_shortcuts(input)
+    parse_shortcuts_with(input, options)
 }
 
 /// Parse shortcuts.vdf format binary data.
@@ -142,8 +164,19 @@ pub fn parse(input: &[u8]) -> Result<Vdf<'_>> {
 /// - Type 0x08: Object end
 ///
 /// All strings are null-terminated.
+///
+/// Uses default [`ParseOptions`] (lossy handling of invalid UTF-8). Use
+/// [`parse_shortcuts_with`] to override.
 pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'_>> {
-    let config = ParseConfig::default();
+    parse_shortcuts_with(input, ParseOptions::default())
+}
+
+/// Parse shortcuts.vdf format binary data with explicit [`ParseOptions`].
+pub fn parse_shortcuts_with(input: &[u8], options: ParseOptions) -> Result<Vdf<'_>> {
+    let config = ParseConfig {
+        invalid_utf8: options.invalid_utf8,
+        ..ParseConfig::default()
+    };
     let (_rest, obj) = parse_object(input, &config)?;
 
     Ok(Vdf::new("root", Value::Obj(obj)))
@@ -172,7 +205,15 @@ pub fn parse_shortcuts(input: &[u8]) -> Result<Vdf<'_>> {
 /// - String table (if magic == 0x07564429, at string_table_offset)
 ///
 /// App entry header is `APPINFO_ENTRY_HEADER_SIZE` (68) bytes.
+///
+/// Uses default [`ParseOptions`] (lossy handling of invalid UTF-8). Use
+/// [`parse_appinfo_with`] to override.
 pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
+    parse_appinfo_with(input, ParseOptions::default())
+}
+
+/// Parse appinfo.vdf format binary data with explicit [`ParseOptions`].
+pub fn parse_appinfo_with(input: &[u8], options: ParseOptions) -> Result<Vdf<'_>> {
     if input.len() < 16 {
         return Err(Error::UnexpectedEndOfInput {
             context: "reading appinfo header",
@@ -230,7 +271,10 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
                 actual: input.len() - offset,
             });
         }
-        Some(parse_string_table(&input[offset..]).map_err(with_offset(offset))?)
+        Some(
+            parse_string_table(&input[offset..], options.invalid_utf8)
+                .map_err(with_offset(offset))?,
+        )
     } else {
         None
     };
@@ -247,6 +291,7 @@ pub fn parse_appinfo(input: &[u8]) -> Result<Vdf<'_>> {
         } else {
             KeyMode::NullTerminated
         },
+        invalid_utf8: options.invalid_utf8,
     };
 
     loop {
@@ -361,7 +406,7 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                         let key_offset = input.len() - rest.len();
                         let (new_rest, key) = config
                             .key_mode
-                            .parse_key(rest)
+                            .parse_key(rest, config.invalid_utf8)
                             .map_err(with_offset(key_offset))?;
                         let (new_rest, nested_obj) = parse_object(new_rest, config)?;
                         obj.insert(key, Value::Obj(nested_obj));
@@ -373,19 +418,20 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                         let key_offset = input.len() - rest.len();
                         let (new_rest, key) = config
                             .key_mode
-                            .parse_key(rest)
+                            .parse_key(rest, config.invalid_utf8)
                             .map_err(with_offset(key_offset))?;
                         let value_offset = input.len() - new_rest.len();
-                        let (new_rest, value) = parse_null_terminated_string_borrowed(new_rest)
-                            .map_err(with_offset(value_offset))?;
-                        obj.insert(key, Value::Str(Cow::Borrowed(value)));
+                        let (new_rest, value) =
+                            parse_null_terminated_string(new_rest, config.invalid_utf8)
+                                .map_err(with_offset(value_offset))?;
+                        obj.insert(key, Value::Str(value));
                         rest = new_rest;
                     }
                     Some(BinaryType::Int32) => {
                         let key_offset = input.len() - rest.len();
                         let (new_rest, key) = config
                             .key_mode
-                            .parse_key(rest)
+                            .parse_key(rest, config.invalid_utf8)
                             .map_err(with_offset(key_offset))?;
                         let value_offset = input.len() - new_rest.len();
                         let (new_rest, value) =
@@ -397,7 +443,7 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                         let key_offset = input.len() - rest.len();
                         let (new_rest, key) = config
                             .key_mode
-                            .parse_key(rest)
+                            .parse_key(rest, config.invalid_utf8)
                             .map_err(with_offset(key_offset))?;
                         let value_offset = input.len() - new_rest.len();
                         let (new_rest, value) =
@@ -409,7 +455,7 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                         let key_offset = input.len() - rest.len();
                         let (new_rest, key) = config
                             .key_mode
-                            .parse_key(rest)
+                            .parse_key(rest, config.invalid_utf8)
                             .map_err(with_offset(key_offset))?;
                         let value_offset = input.len() - new_rest.len();
                         let (new_rest, value) =
@@ -421,7 +467,7 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                         let key_offset = input.len() - rest.len();
                         let (new_rest, key) = config
                             .key_mode
-                            .parse_key(rest)
+                            .parse_key(rest, config.invalid_utf8)
                             .map_err(with_offset(key_offset))?;
                         let value_offset = input.len() - new_rest.len();
                         let (new_rest, value) =
@@ -433,11 +479,11 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                         let key_offset = input.len() - rest.len();
                         let (new_rest, key) = config
                             .key_mode
-                            .parse_key(rest)
+                            .parse_key(rest, config.invalid_utf8)
                             .map_err(with_offset(key_offset))?;
                         let value_offset = input.len() - new_rest.len();
-                        let (new_rest, value) =
-                            parse_value_wstring(new_rest).map_err(with_offset(value_offset))?;
+                        let (new_rest, value) = parse_value_wstring(new_rest, config.invalid_utf8)
+                            .map_err(with_offset(value_offset))?;
                         obj.insert(key, value);
                         rest = new_rest;
                     }
@@ -445,7 +491,7 @@ fn parse_object<'a>(input: &'a [u8], config: &ParseConfig<'a, '_>) -> Result<(&'
                         let key_offset = input.len() - rest.len();
                         let (new_rest, key) = config
                             .key_mode
-                            .parse_key(rest)
+                            .parse_key(rest, config.invalid_utf8)
                             .map_err(with_offset(key_offset))?;
                         let value_offset = input.len() - new_rest.len();
                         let (new_rest, value) =
@@ -526,8 +572,11 @@ fn parse_value_ptr<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
 }
 
 /// Parse a WideString value (UTF-16LE, null-terminated).
-fn parse_value_wstring<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
-    let (rest, string) = parse_null_terminated_wstring(input)?;
+fn parse_value_wstring<'a>(
+    input: &'a [u8],
+    invalid_utf8: InvalidUtf8,
+) -> Result<(&'a [u8], Value<'a>)> {
+    let (rest, string) = parse_null_terminated_wstring(input, invalid_utf8)?;
     Ok((rest, Value::Str(Cow::Owned(string))))
 }
 
@@ -550,10 +599,33 @@ fn parse_value_color<'a>(input: &'a [u8]) -> Result<(&'a [u8], Value<'a>)> {
 
 // ===== String Parsing Functions =====
 
-/// Parse a null-terminated string (UTF-8), returning a borrowed slice.
+/// Decode a byte slice as UTF-8 according to `invalid_utf8`.
 ///
-/// This is the zero-copy version that borrows from the input when possible.
-fn parse_null_terminated_string_borrowed(input: &[u8]) -> Result<(&[u8], &str)> {
+/// In [`InvalidUtf8::Strict`] mode, invalid bytes produce an
+/// [`Error::InvalidUtf8`]. In [`InvalidUtf8::Lossy`] mode, invalid sequences are
+/// replaced with U+FFFD; valid input is still borrowed zero-copy (only strings
+/// that actually contain invalid bytes are allocated).
+fn decode_utf8(bytes: &[u8], invalid_utf8: InvalidUtf8) -> Result<Cow<'_, str>> {
+    match invalid_utf8 {
+        InvalidUtf8::Strict => {
+            core::str::from_utf8(bytes)
+                .map(Cow::Borrowed)
+                .map_err(|e| Error::InvalidUtf8 {
+                    offset: e.valid_up_to(),
+                })
+        }
+        InvalidUtf8::Lossy => Ok(String::from_utf8_lossy(bytes)),
+    }
+}
+
+/// Parse a null-terminated string (UTF-8).
+///
+/// Zero-copy: the returned `Cow` borrows from the input when the bytes are valid
+/// UTF-8. Handling of invalid bytes is controlled by `invalid_utf8`.
+fn parse_null_terminated_string(
+    input: &[u8],
+    invalid_utf8: InvalidUtf8,
+) -> Result<(&[u8], Cow<'_, str>)> {
     let null_pos = input
         .iter()
         .position(|&b| b == 0)
@@ -564,10 +636,7 @@ fn parse_null_terminated_string_borrowed(input: &[u8]) -> Result<(&[u8], &str)> 
             actual: input.len(),
         })?;
 
-    let bytes = &input[..null_pos];
-    let string = core::str::from_utf8(bytes).map_err(|e| Error::InvalidUtf8 {
-        offset: e.valid_up_to(),
-    })?;
+    let string = decode_utf8(&input[..null_pos], invalid_utf8)?;
 
     Ok((&input[null_pos + 1..], string))
 }
@@ -576,7 +645,10 @@ fn parse_null_terminated_string_borrowed(input: &[u8]) -> Result<(&[u8], &str)> 
 ///
 /// WideString is terminated by two zero bytes (0x00 0x00).
 /// Note: This allocates due to UTF-16 to UTF-8 conversion.
-fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
+fn parse_null_terminated_wstring(
+    input: &[u8],
+    invalid_utf8: InvalidUtf8,
+) -> Result<(&[u8], String)> {
     // Find the double-null terminator
     let mut i = 0;
     while i + 1 < input.len() {
@@ -601,15 +673,20 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
         .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]));
 
     // Decode UTF-16 to char and then to String
-    let string: String = char::decode_utf16(utf16_units)
-        .enumerate()
-        .map(|(pos, r)| {
-            r.map_err(|_| Error::InvalidUtf16 {
-                offset: pos * 2,
-                position: pos,
+    let string: String = match invalid_utf8 {
+        InvalidUtf8::Strict => char::decode_utf16(utf16_units)
+            .enumerate()
+            .map(|(pos, r)| {
+                r.map_err(|_| Error::InvalidUtf16 {
+                    offset: pos * 2,
+                    position: pos,
+                })
             })
-        })
-        .collect::<core::result::Result<_, _>>()?;
+            .collect::<core::result::Result<_, _>>()?,
+        InvalidUtf8::Lossy => char::decode_utf16(utf16_units)
+            .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect(),
+    };
 
     Ok((&input[i + 2..], string))
 }
@@ -621,7 +698,7 @@ fn parse_null_terminated_wstring(input: &[u8]) -> Result<(&[u8], String)> {
 /// Format:
 /// - 4 bytes: string_count (little-endian u32)
 /// - Then string_count null-terminated UTF-8 strings
-fn parse_string_table(input: &[u8]) -> Result<StringTable<'_>> {
+fn parse_string_table(input: &[u8], invalid_utf8: InvalidUtf8) -> Result<StringTable<'_>> {
     let (mut rest, string_count) = ensure_read_u32_le(input)?;
     let string_count = string_count as usize;
 
@@ -637,7 +714,7 @@ fn parse_string_table(input: &[u8]) -> Result<StringTable<'_>> {
                 actual: 0,
             });
         }
-        let (new_rest, string) = parse_null_terminated_string_borrowed(rest)?;
+        let (new_rest, string) = parse_null_terminated_string(rest, invalid_utf8)?;
         strings.push(string);
         rest = new_rest;
     }
@@ -665,7 +742,15 @@ const PACKAGEINFO_ENTRY_HEADER_SIZE_V40: usize = 4 + 20 + 4 + 8; // + token
 ///   - 4 bytes: Change number (uint32)
 ///   - 8 bytes: PICS token (uint64, only in v40+)
 ///   - Binary VDF blob (KeyValues1 binary) with package metadata
+///
+/// Uses default [`ParseOptions`] (lossy handling of invalid UTF-8). Use
+/// [`parse_packageinfo_with`] to override.
 pub fn parse_packageinfo(input: &[u8]) -> Result<Vdf<'_>> {
+    parse_packageinfo_with(input, ParseOptions::default())
+}
+
+/// Parse packageinfo.vdf format binary data with explicit [`ParseOptions`].
+pub fn parse_packageinfo_with(input: &[u8], options: ParseOptions) -> Result<Vdf<'_>> {
     if input.len() < 8 {
         return Err(Error::UnexpectedEndOfInput {
             context: "reading packageinfo header",
@@ -771,7 +856,11 @@ pub fn parse_packageinfo(input: &[u8]) -> Result<Vdf<'_>> {
         // Parse the VDF data for this package
         let vdf_data = &rest[vdf_data_offset..];
 
-        let config = ParseConfig::default(); // Uses null-terminated keys like shortcuts
+        // Uses null-terminated keys like shortcuts
+        let config = ParseConfig {
+            invalid_utf8: options.invalid_utf8,
+            ..ParseConfig::default()
+        };
 
         let (_vdf_rest, package_obj) =
             parse_object(vdf_data, &config).map_err(with_offset(input.len() - vdf_data.len()))?;
@@ -1022,15 +1111,66 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_invalid_utf8_string() {
+    fn test_parse_invalid_utf8_string_strict() {
         let data: &[u8] = &[
             0x00, b't', b'e', b's', b't', 0x00, 0x01, // String type
             b'k', b'e', b'y', 0x00, 0xFF, 0xFF, 0x00, // Invalid UTF-8 followed by null
         ];
+        let opts = ParseOptions::new().invalid_utf8(InvalidUtf8::Strict);
         assert!(matches!(
-            parse_shortcuts(data),
+            parse_shortcuts_with(data, opts),
             Err(Error::InvalidUtf8 { .. })
         ));
+    }
+
+    #[test]
+    fn test_parse_invalid_utf8_string_lossy_default() {
+        // The reported real-world case: a value with a lone 0xFD byte
+        // ("Moje Spore v\u{fffd}tvory", Windows-1250 'ý'). The default is lossy,
+        // so parsing succeeds and the bad byte becomes U+FFFD.
+        let data: &[u8] = &[
+            0x00, b't', b'e', b's', b't', 0x00, 0x01, // String type
+            b'n', b'a', b'm', b'e', 0x00, // key "name"
+            b'v', 0xFD, b't', 0x00, // value "v\u{fffd}t"
+            0x08, // object end
+        ];
+        let vdf = parse_shortcuts(data).unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let test = obj.get("test").and_then(|v| v.as_obj()).unwrap();
+        assert_eq!(
+            test.get("name").and_then(|v| v.as_str()),
+            Some("v\u{fffd}t")
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_utf8_key_lossy() {
+        // Keys can also carry invalid bytes; lossy mode must handle them too.
+        let data: &[u8] = &[
+            0x00, b'k', 0xFD, 0x00, // object key "k\u{fffd}"
+            0x01, b'a', 0x00, b'b', 0x00, // "a" -> "b"
+            0x08,
+        ];
+        let vdf = parse_shortcuts(data).unwrap();
+        let obj = vdf.as_obj().unwrap();
+        assert!(obj.get("k\u{fffd}").is_some());
+    }
+
+    #[test]
+    fn test_valid_utf8_still_borrowed_lossy() {
+        // Lossy mode must not allocate for valid strings — they stay borrowed.
+        let data: &[u8] = &[
+            0x00, b't', 0x00, // object "t"
+            0x01, b'k', 0x00, b'v', 0x00, // "k" -> "v"
+            0x08,
+        ];
+        let vdf = parse_shortcuts(data).unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let inner = obj.get("t").and_then(|v| v.as_obj()).unwrap();
+        match inner.get("k").unwrap() {
+            Value::Str(Cow::Borrowed(_)) => {}
+            other => panic!("expected borrowed str, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1131,6 +1271,77 @@ mod tests {
             parse_appinfo(data),
             Err(Error::UnexpectedEndOfInput { .. })
         ));
+    }
+
+    /// Build a minimal, well-formed v41 appinfo blob with a single app whose
+    /// only key is string-table entry 0. The caller supplies the raw bytes of
+    /// that entry (without the null terminator), so a test can inject invalid
+    /// UTF-8 into the *string table* (the path a v41 localized key takes).
+    fn build_v41_appinfo(key_bytes: &[u8]) -> alloc::vec::Vec<u8> {
+        let mut data = alloc::vec::Vec::new();
+        data.extend_from_slice(&APPINFO_MAGIC_41.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // universe
+        let st_offset_pos = data.len();
+        data.extend_from_slice(&[0u8; 8]); // string table offset (patched later)
+
+        // --- one app entry ---
+        data.extend_from_slice(&10u32.to_le_bytes()); // app_id
+        let size_pos = data.len();
+        data.extend_from_slice(&[0u8; 4]); // size (patched later)
+        let after_size_start = data.len();
+        data.extend_from_slice(&[0u8; APPINFO_HEADER_AFTER_SIZE]); // 60-byte header tail
+        // VDF: string entry with key = table index 0, inline value "value"
+        data.push(0x01); // String type
+        data.extend_from_slice(&0u32.to_le_bytes()); // key index 0
+        data.extend_from_slice(b"value\x00");
+        data.push(0x08); // object end
+        let size = (data.len() - after_size_start) as u32;
+        data[size_pos..size_pos + 4].copy_from_slice(&size.to_le_bytes());
+
+        // In v41 the apps section ends at the string-table offset (there is no
+        // app_id=0 terminator), so the table immediately follows the last app.
+        // --- string table ---
+        let st_offset = data.len() as u64;
+        data[st_offset_pos..st_offset_pos + 8].copy_from_slice(&st_offset.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // string_count
+        data.extend_from_slice(key_bytes);
+        data.push(0x00); // null terminator
+
+        data
+    }
+
+    #[test]
+    fn test_parse_appinfo_v41_invalid_utf8_string_table_lossy() {
+        // Invalid byte (0xFD) inside a v41 string-table entry used as a key.
+        let data = build_v41_appinfo(&[b'n', b'a', 0xFD, b'e']);
+        let vdf = parse_appinfo(&data).unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let app = obj.get("10").and_then(|v| v.as_obj()).unwrap();
+        // Key was decoded lossily; the value is still reachable under it.
+        assert_eq!(
+            app.get("na\u{fffd}e").and_then(|v| v.as_str()),
+            Some("value")
+        );
+    }
+
+    #[test]
+    fn test_parse_appinfo_v41_invalid_utf8_string_table_strict() {
+        let data = build_v41_appinfo(&[b'n', b'a', 0xFD, b'e']);
+        let opts = ParseOptions::new().invalid_utf8(InvalidUtf8::Strict);
+        assert!(matches!(
+            parse_appinfo_with(&data, opts),
+            Err(Error::InvalidUtf8 { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_appinfo_v41_valid_string_table_roundtrips() {
+        // Sanity check that the synthetic v41 builder produces a parseable blob.
+        let data = build_v41_appinfo(b"name");
+        let vdf = parse_appinfo(&data).unwrap();
+        let obj = vdf.as_obj().unwrap();
+        let app = obj.get("10").and_then(|v| v.as_obj()).unwrap();
+        assert_eq!(app.get("name").and_then(|v| v.as_str()), Some("value"));
     }
 
     #[test]
